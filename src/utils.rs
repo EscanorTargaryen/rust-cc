@@ -22,5 +22,15 @@ pub(crate) unsafe fn cc_dealloc<T: ?Sized + Trace + 'static>(
 }
 
 #[inline(always)]
+pub(crate) fn prefetch<T: ?Sized + Trace + 'static>(ptr: Option<NonNull<CcOnHeap<T>>>) {
+    if let Some(ptr) = ptr {
+        unsafe {
+            use std::arch::x86_64::{_mm_prefetch, _MM_HINT_ET1};
+            _mm_prefetch::<_MM_HINT_ET1>(ptr.cast().as_ptr());
+        }
+    }
+}
+
+#[inline(always)]
 #[cold]
 pub(crate) fn cold() {}

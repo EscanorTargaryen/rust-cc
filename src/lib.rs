@@ -95,6 +95,13 @@ fn collect() {
         while let Some(ptr) = POSSIBLE_CYCLES.with(|pc| pc.borrow_mut().remove_first()) {
             // remove_first already marks ptr as NonMarked
 
+            unsafe {
+                // ptr is already in cache since it is accessed by remove_first
+                if let Some(ptr) = *ptr.as_ref().get_next() {
+                    prefetch(*ptr.as_ref().get_next());
+                }
+            }
+
             // SAFETY: ptr comes from POSSIBLE_CYCLES list, so it is surely valid since lists contain only pointers to valid CcOnHeap<_>
             unsafe {
                 trace_counting(ptr, &mut root_list, &mut non_root_list);
@@ -132,6 +139,10 @@ fn collect() {
             let _finalizing_guard = replace_state_field!(finalizing, true);
 
             non_root_list.iter().for_each(|ptr| {
+                unsafe {
+                    prefetch(*ptr.as_ref().get_next());
+                }
+
                 // SAFETY: ptr comes from non_root_list, so it is surely valid since lists contain only pointers to valid CcOnHeap<_>
                 if unsafe { CcOnHeap::finalize_inner(ptr.cast()) } {
                     has_finalized = true;
@@ -171,6 +182,10 @@ fn deallocate_list(to_deallocate_list: List) {
 
     // Drop every CcOnHeap before deallocating them (see comment below)
     to_deallocate_list.iter().for_each(|ptr| {
+        unsafe {
+            prefetch(*ptr.as_ref().get_next());
+        }
+
         // SAFETY: ptr comes from non_root_list, so it is surely valid since lists contain only pointers to valid CcOnHeap<_>.
         //         Also, it's valid to drop in place ptr
         unsafe { CcOnHeap::drop_inner(ptr.cast()) };
@@ -179,6 +194,10 @@ fn deallocate_list(to_deallocate_list: List) {
     });
 
     to_deallocate_list.iter().for_each(|ptr| {
+        unsafe {
+            prefetch(*ptr.as_ref().get_next());
+        }
+
         // SAFETY: ptr.as_ref().elem is never read or written (only the layout information is read)
         //         and then the allocation gets deallocated immediately after
         unsafe {
@@ -211,6 +230,10 @@ unsafe fn trace_counting(
 fn trace_roots(root_list: &mut List, non_root_list: &mut List) {
     let mut ctx = Context::new(ContextInner::RootTracing { non_root_list });
     root_list.iter().for_each(|ptr| {
+        unsafe {
+            prefetch(*ptr.as_ref().get_next());
+        }
+
         // SAFETY: ptr comes from a list, so it is surely valid since lists contain only pointers to valid CcOnHeap<_>
         unsafe {
             CcOnHeap::start_tracing(ptr, &mut ctx);
