@@ -51,7 +51,7 @@ pub use cc::Cc;
 pub use trace::{Context, Finalize, Trace};
 
 rust_cc_thread_local! {
-    pub(crate) static POSSIBLE_CYCLES: RefCell<CountedList> = RefCell::new(CountedList::new());
+    pub(crate) static POSSIBLE_CYCLES: RefCell<CountedList> = const { RefCell::new(CountedList::new()) };
 }
 
 pub fn collect_cycles() {
