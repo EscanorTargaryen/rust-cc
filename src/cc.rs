@@ -1,23 +1,30 @@
 use alloc::alloc::Layout;
-use core::cell::UnsafeCell;
-use core::marker::PhantomData;
-use core::mem;
-use core::ops::Deref;
-use core::ptr::{self, drop_in_place, NonNull};
-use alloc::rc::Rc;
 #[cfg(feature = "nightly")]
 use core::{
     marker::Unsize,
     ops::CoerceUnsized,
-    ptr::{metadata, DynMetadata},
+    ptr::{DynMetadata, metadata},
 };
+use core::cell::UnsafeCell;
+use core::mem;
+use core::ops::Deref;
+use core::ptr::{self, drop_in_place, NonNull};
+use std::marker::PhantomData;
+use std::sync::{Arc, Condvar, OnceLock};
+use std::thread;
 
+use crate::collector::init_collector;
 use crate::counter_marker::{CounterMarker, Mark};
+use crate::list::ListMethods;
+use crate::POSSIBLE_CYCLES;
 use crate::state::{replace_state_field, state, State, try_state};
 use crate::trace::{Context, ContextInner, Finalize, Trace};
-use crate::list::ListMethods;
 use crate::utils::*;
-use crate::POSSIBLE_CYCLES;
+
+pub static COLLECTOR: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
+
+//usage:  CONDVAR.get().clone().unwrap().notify_one();
+pub static CONDVAR: OnceLock<Arc<Condvar>> = OnceLock::new();
 
 /// A thread-local cycle collected pointer.
 ///
@@ -25,7 +32,7 @@ use crate::POSSIBLE_CYCLES;
 #[repr(transparent)]
 pub struct Cc<T: ?Sized + Trace + 'static> {
     inner: NonNull<CcBox<T>>,
-    _phantom: PhantomData<Rc<T>>, // Make Cc !Send and !Sync
+    _phantom: PhantomData<Arc<T>>, // Make Cc !Send and !Sync
 }
 
 #[cfg(feature = "nightly")]
@@ -33,25 +40,31 @@ impl<T, U> CoerceUnsized<Cc<U>> for Cc<T>
 where
     T: ?Sized + Trace + Unsize<U> + 'static,
     U: ?Sized + Trace + 'static,
-{
-}
+{}
+
+
+unsafe impl<T: Trace + 'static + Send> Send for Cc<T> {}
+
+unsafe impl<T: Trace + 'static + Sync> Sync for Cc<T> {}
 
 impl<T: Trace + 'static> Cc<T> {
     /// Creates a new `Cc`.
-    /// 
+    ///
     /// # Collection
-    /// 
+    ///
     /// This method may start a collection when the `auto-collect` feature is enabled.
-    /// 
+    ///
     /// See the [`config` module documentation][`mod@crate::config`] for more details.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if the automatically-stared collection panics.
     #[inline(always)]
     #[must_use = "newly created Cc is immediately dropped"]
     #[track_caller]
     pub fn new(t: T) -> Cc<T> {
+        init_collector();
+
         state(|state| {
             #[cfg(debug_assertions)]
             if state.is_tracing() {
@@ -67,6 +80,7 @@ impl<T: Trace + 'static> Cc<T> {
             }
         })
     }
+
 
     /// Takes out the value inside a [`Cc`].
     ///
@@ -118,9 +132,9 @@ impl<T: ?Sized + Trace + 'static> Cc<T> {
     }
 
     /// Makes the value in the managed allocation finalizable again.
-    /// 
+    ///
     /// # Panics
-    /// 
+    ///
     /// Panics if called during a collection.
     #[cfg(feature = "finalization")]
     #[inline]
@@ -144,11 +158,11 @@ impl<T: ?Sized + Trace + 'static> Cc<T> {
     }
 
     /// Marks the managed allocation as *alive*.
-    /// 
+    ///
     /// Every time a [`Cc`] is dropped, the pointed allocation is buffered to be processed in the next collection.
     /// This method simply removes the managed allocation from the buffer, potentially reducing the amount of work
     /// needed to be done by the collector.
-    /// 
+    ///
     /// This method is a no-op when called on a [`Cc`] pointing to an allocation which is not buffered.
     #[inline]
     pub fn mark_alive(&self) {
@@ -177,16 +191,16 @@ impl<T: ?Sized + Trace + 'static> Cc<T> {
     pub(crate) fn __new_internal(inner: NonNull<CcBox<T>>) -> Cc<T> {
         Cc {
             inner,
-            _phantom: PhantomData,
+            // _phantom: PhantomData,
         }
     }
 }
 
 impl<T: ?Sized + Trace + 'static> Clone for Cc<T> {
     /// Makes a clone of the [`Cc`] pointer.
-    /// 
+    ///
     /// This creates another pointer to the same allocation, increasing the strong reference count.
-    /// 
+    ///
     /// Cloning a [`Cc`] also marks the managed allocation as `alive`. See [`mark_alive`][`Cc::mark_alive`] for more details.
     ///
     /// # Panics
@@ -259,6 +273,8 @@ impl<T: ?Sized + Trace + 'static> Drop for Cc<T> {
             decrement_counter(self);
             return;
         }
+
+        let r = self.counter_marker().counter();
 
         if self.counter_marker().counter() == 1 {
             // Only us have a pointer to this allocation, deallocate!
@@ -338,7 +354,7 @@ pub(crate) struct CcBox<T: ?Sized + Trace + 'static> {
     fat_ptr: NonNull<dyn InternalTrace>,
 
     counter_marker: CounterMarker,
-    _phantom: PhantomData<Rc<()>>, // Make CcBox !Send and !Sync
+    //_phantom: PhantomData<Rc<()>>, // Make CcBox !Send and !Sync
 
     // This UnsafeCell is necessary, since we want to execute Drop::drop (which takes an &mut)
     // for elem but still have access to the other fields of CcBox
@@ -368,7 +384,7 @@ impl<T: Trace + 'static> CcBox<T> {
                     #[cfg(not(feature = "nightly"))]
                     fat_ptr: NonNull::new_unchecked(ptr.as_ptr() as *mut dyn InternalTrace),
                     counter_marker: CounterMarker::new_with_counter_to_one(already_finalized),
-                    _phantom: PhantomData,
+                    //  _phantom: PhantomData,
                     elem: UnsafeCell::new(t),
                 },
             );
@@ -559,13 +575,13 @@ impl CcBox<()> {
 
                 // Element is surely not already marked, marking
                 counter_marker.mark(Mark::Traced);
-            },
+            }
             ContextInner::RootTracing { .. } => {
                 // ptr is a root
 
                 // Nothing to do here, ptr is already unmarked
                 debug_assert!(counter_marker.is_not_marked());
-            },
+            }
         }
 
         // ptr is surely to trace
@@ -636,7 +652,7 @@ impl CcBox<()> {
                     // Don't continue tracing
                     false
                 }
-            },
+            }
             ContextInner::RootTracing { non_root_list, root_list } => {
                 if counter_marker.is_traced() {
                     // Marking NonMarked since ptr will be removed from any list it's into. Also, marking
@@ -655,7 +671,7 @@ impl CcBox<()> {
                     // Don't continue tracing
                     false
                 }
-            },
+            }
         }
     }
 }

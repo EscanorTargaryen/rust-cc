@@ -5,7 +5,7 @@
 //! immediately when the reference counter drops to zero.
 //!
 //! Currently, the cycle collector is not concurrent. As such, [`Cc`] doesn't implement [`Send`] nor [`Sync`].
-//! 
+//!
 //! ## Examples
 //!
 //! ### Basic usage
@@ -93,7 +93,7 @@ assert!(weak_ptr.upgrade().is_none());
 ```"]
 //!
 //! See the [`weak` module documentation][`mod@weak`] for more details.
-//! 
+//!
 //! ### Cleaners
 //!
 #![cfg_attr(
@@ -126,15 +126,18 @@ let cleanable = foo.cleaner.register(move || {
 // It's also possible to call the cleaning action manually
 cleanable.clean();
 ```"]
-//! 
+//!
 //! See the [`cleaners` module documentation][`mod@cleaners`] for more details.
-//! 
+//!
 //! [`Send`]: `std::marker::Send`
 //! [`Sync`]: `std::marker::Sync`
 //! [`Rc`]: `std::rc::Rc`
 
 #![cfg_attr(feature = "nightly", feature(unsize, coerce_unsized, ptr_metadata))]
-#![cfg_attr(all(feature = "nightly", not(feature = "std")), feature(thread_local))] // no-std related unstable features
+#![cfg_attr(
+    all(feature = "nightly", not(feature = "std")),
+    feature(thread_local)
+)] // no-std related unstable features
 #![cfg_attr(doc_auto_cfg, feature(doc_auto_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -142,23 +145,28 @@ cleanable.clean();
 #![allow(clippy::thread_local_initializer_can_be_made_const)]
 #![allow(unexpected_cfgs)]
 
-#[cfg(all(not(feature = "std"), not(feature = "nightly")))]
-compile_error!("Feature \"std\" cannot be disabled without enabling feature \"nightly\" (due to #[thread_local] not being stable).");
-
 extern crate alloc;
 
 use core::cell::RefCell;
 use core::mem;
 use core::mem::ManuallyDrop;
-use core::ptr::NonNull;
 use core::ops::{Deref, DerefMut};
+use core::ptr::NonNull;
 
-use crate::cc::CcBox;
+pub use cc::Cc;
+#[cfg(feature = "derive")]
+pub use derives::{Finalize, Trace};
+pub use trace::{Context, Finalize, Trace};
+
+use crate::cc::{CcBox, CONDVAR};
 use crate::counter_marker::Mark;
 use crate::list::*;
 use crate::state::{replace_state_field, State, try_state};
 use crate::trace::ContextInner;
 use crate::utils::*;
+
+#[cfg(all(not(feature = "std"), not(feature = "nightly")))]
+compile_error!("Feature \"std\" cannot be disabled without enabling feature \"nightly\" (due to #[thread_local] not being stable).");
 
 #[cfg(all(test, feature = "std"))]
 mod tests;
@@ -169,6 +177,10 @@ mod list;
 pub mod state;
 mod trace;
 mod utils;
+
+pub mod collector;
+
+pub use cc::COLLECTOR;
 
 #[cfg(feature = "auto-collect")]
 pub mod config;
@@ -182,12 +194,6 @@ pub mod weak;
 #[cfg(feature = "cleaners")]
 pub mod cleaners;
 
-#[cfg(feature = "derive")]
-pub use derives::{Finalize, Trace};
-
-pub use cc::Cc;
-pub use trace::{Context, Finalize, Trace};
-
 rust_cc_thread_local! {
     pub(crate) static POSSIBLE_CYCLES: RefCell<CountedList> = RefCell::new(CountedList::new());
 }
@@ -196,18 +202,13 @@ rust_cc_thread_local! {
 ///
 /// Calling this function during a collection won't start a new collection.
 pub fn collect_cycles() {
-    let _ = try_state(|state| {
-        if state.is_collecting() {
-            return;
-        }
+    let Some(co) = CONDVAR.get() else {
+        return;
+    };
 
-        let _ = POSSIBLE_CYCLES.try_with(|pc| {
-            collect(state, pc);
-        });
+    co.notify_one();
 
-        #[cfg(feature = "auto-collect")]
-        adjust_trigger_point(state);
-    });
+    // collect(state, pc);
 }
 
 #[cfg(feature = "auto-collect")]
@@ -220,9 +221,11 @@ pub(crate) fn trigger_collection() {
 
         let _ = POSSIBLE_CYCLES.try_with(|pc| {
             if config::config(|config| config.should_collect(state, pc)).unwrap_or(false) {
-                collect(state, pc);
+                CONDVAR.get().unwrap().notify_one();
 
-                adjust_trigger_point(state);
+                //  collect(state, pc);
+
+                // adjust_trigger_point(state);
             }
         });
     });
@@ -275,8 +278,13 @@ fn collect(state: &State, possible_cycles: &RefCell<CountedList>) {
 
         __collect(state, possible_cycles);
     }
+
+    let s = possible_cycles;
+   
     #[cfg(not(feature = "finalization"))]
     if !is_empty(possible_cycles) {
+        
+       
         __collect(state, possible_cycles);
     }
 

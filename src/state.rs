@@ -1,9 +1,9 @@
 //! Information about the garbage collector state.
 
 use alloc::alloc::Layout;
-use alloc::rc::Rc;
+
 use core::cell::Cell;
-use core::marker::PhantomData;
+
 use thiserror::Error;
 use crate::utils;
 
@@ -55,7 +55,7 @@ pub(crate) struct State {
     allocated_bytes: Cell<usize>,
     executions_counter: Cell<usize>,
 
-    _phantom: PhantomData<Rc<()>>, // Make State !Send and !Sync
+    //_phantom: PhantomData<Rc<()>>,  Make State !Send and !Sync
 }
 
 impl State {
@@ -71,7 +71,7 @@ impl State {
             allocated_bytes: Cell::new(0),
             executions_counter: Cell::new(0),
 
-            _phantom: PhantomData,
+            //_phantom: PhantomData,
         }
     }
 

@@ -22,7 +22,7 @@ license = "MIT OR Apache-2.0"
 edition = "2021"
 
 [features]
-default = ["auto-collect", "finalization", "derive", "std"]
+default = ["auto-collect", "derive", "std"]
 
 # Enables support for nightly-only features
 nightly = []
