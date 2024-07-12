@@ -6,25 +6,42 @@ use core::{
     ptr::{DynMetadata, metadata},
 };
 use core::cell::UnsafeCell;
-use core::mem;
 use core::ops::Deref;
 use core::ptr::{self, drop_in_place, NonNull};
 use std::marker::PhantomData;
-use std::sync::{Arc, Condvar, OnceLock};
-use std::thread;
+use std::sync::{Arc, Mutex};
 
 use crate::collector::init_collector;
 use crate::counter_marker::{CounterMarker, Mark};
 use crate::list::ListMethods;
-use crate::POSSIBLE_CYCLES;
-use crate::state::{replace_state_field, state, State, try_state};
+use crate::state::{state, State};
 use crate::trace::{Context, ContextInner, Finalize, Trace};
 use crate::utils::*;
 
-pub static COLLECTOR: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
+pub enum Action {
+    Add,
+    Remove,
+}
 
-//usage:  CONDVAR.get().clone().unwrap().notify_one();
-pub static CONDVAR: OnceLock<Arc<Condvar>> = OnceLock::new();
+pub struct ActionEntry {
+    pub cc_box: NonNull<CcBox<()>>,
+    pub action: Action,
+}
+
+unsafe impl Send for ActionEntry {}
+
+impl ActionEntry {
+    fn new(cc_box: NonNull<CcBox<()>>, action: Action) -> Self {
+        Self {
+            cc_box,
+            action,
+        }
+    }
+}
+
+
+pub static THREAD_ACTIONS: Mutex<Vec<ActionEntry>> = Mutex::new(Vec::new());
+
 
 /// A thread-local cycle collected pointer.
 ///
@@ -81,35 +98,35 @@ impl<T: Trace + 'static> Cc<T> {
         })
     }
 
-
-    /// Takes out the value inside a [`Cc`].
-    ///
-    /// # Panics
-    /// Panics if the [`Cc`] is not unique (see [`is_unique`]).
-    ///
-    /// [`is_unique`]: fn@Cc::is_unique
-    #[inline]
-    #[track_caller]
-    pub fn into_inner(self) -> T {
-        assert!(self.is_unique(), "Cc<_> is not unique");
-
-        assert!(
-            !self.counter_marker().is_traced(),
-            "Cc<_> is being used by the collector and inner value cannot be taken out (this might have happen inside Trace, Finalize or Drop implementations)."
-        );
-
-        // Make sure self is not into POSSIBLE_CYCLES before deallocating
-        remove_from_list(self.inner.cast());
-
-        // SAFETY: self is unique and is not inside any list
-        unsafe {
-            let t = ptr::read(self.inner().get_elem());
-            let layout = self.inner().layout();
-            let _ = try_state(|state| cc_dealloc(self.inner, layout, state));
-            mem::forget(self); // Don't call drop on this Cc
-            t
-        }
-    }
+    /*
+       /// Takes out the value inside a [`Cc`].
+       ///
+       /// # Panics
+       /// Panics if the [`Cc`] is not unique (see [`is_unique`]).
+       ///
+       /// [`is_unique`]: fn@Cc::is_unique
+      #[ine]
+       #[track_caller]
+       pub fn into_inner(self) -> T {
+           assert!(self.is_unique(), "Cc<_> is not unique");
+    
+           assert!(
+               !self.counter_marker().is_traced(),
+               "Cc<_> is being used by the collector and inner value cannot be taken out (this might have happen inside Trace, Finalize or Drop implementations)."
+           );
+    
+           // Make sure self is not into POSSIBLE_CYCLES before deallocating
+           remove_from_list(self.inner.cast());
+    
+           // SAFETY: self is unique and is not inside any list
+           unsafe {
+               let t = ptr::read(self.inner().get_elem());
+               let layout = self.inner().layout();
+               let _ = try_state(|state| cc_dealloc(self.inner, layout, state));
+               mem::forget(self); // Don't call drop on this Cc
+               t
+           }
+       }*/
 }
 
 impl<T: ?Sized + Trace + 'static> Cc<T> {
@@ -166,7 +183,7 @@ impl<T: ?Sized + Trace + 'static> Cc<T> {
     /// This method is a no-op when called on a [`Cc`] pointing to an allocation which is not buffered.
     #[inline]
     pub fn mark_alive(&self) {
-        remove_from_list(self.inner.cast());
+        //   remove_from_list(self.inner.cast());
     }
 
     #[inline(always)]
@@ -214,11 +231,15 @@ impl<T: ?Sized + Trace + 'static> Clone for Cc<T> {
             panic!("Cannot clone while tracing!");
         }
 
-        if self.counter_marker().increment_counter().is_err() {
-            panic!("Too many references has been created to a single Cc");
-        }
 
-        self.mark_alive();
+        THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(self.inner.cast(), Action::Add));
+
+
+        /* if self.counter_marker().increment_counter().is_err() {
+             panic!("Too many references has been created to a single Cc");
+         }*/
+
+        //self.mark_alive();
 
         // It's always safe to clone a Cc
         Cc {
@@ -227,6 +248,7 @@ impl<T: ?Sized + Trace + 'static> Clone for Cc<T> {
         }
     }
 }
+
 
 impl<T: ?Sized + Trace + 'static> Deref for Cc<T> {
     type Target = T;
@@ -255,8 +277,10 @@ impl<T: ?Sized + Trace + 'static> Drop for Cc<T> {
         #[inline]
         fn decrement_counter<T: ?Sized + Trace + 'static>(cc: &Cc<T>) {
             // Always decrement the counter
-            let res = cc.counter_marker().decrement_counter();
-            debug_assert!(res.is_ok());
+            // let res = cc.counter_marker().decrement_counter();
+            THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(cc.inner.cast(), Action::Remove));
+
+            //debug_assert!(res.is_ok());
         }
 
         #[inline]
@@ -264,69 +288,77 @@ impl<T: ?Sized + Trace + 'static> Drop for Cc<T> {
             decrement_counter(cc);
 
             // We know that we're not part of either root_list or non_root_list, since the cc isn't traced
-            add_to_list(cc.inner.cast());
+            //TODO add to modifications that the mutator will send
+            //  add_to_list(cc.inner.cast());
         }
 
-        // A CcBox can be marked traced only during collections while being into a list different than POSSIBLE_CYCLES.
-        // In this case, no further action has to be taken, except decrementing the reference counter.
-        if self.counter_marker().is_traced() {
-            decrement_counter(self);
-            return;
-        }
+        decrement_counter(self);
 
-        let r = self.counter_marker().counter();
 
-        if self.counter_marker().counter() == 1 {
-            // Only us have a pointer to this allocation, deallocate!
-
-            state(|state| {
-                #[cfg(feature = "finalization")]
-                if self.counter_marker().needs_finalization() {
-                    let _finalizing_guard = replace_state_field!(finalizing, true, state);
-
-                    // Set finalized
-                    self.counter_marker().set_finalized(true);
-
-                    self.inner().get_elem().finalize();
-
-                    if self.counter_marker().counter() != 1 {
-                        // The object has been resurrected
-                        handle_possible_cycle(self);
-                        return;
-                    }
-                    // _finalizing_guard is dropped here, resetting state.finalizing
-                }
-
-                decrement_counter(self);
-                remove_from_list(self.inner.cast());
-
-                let _dropping_guard = replace_state_field!(dropping, true, state);
-                let layout = self.inner().layout();
-
-                // Set the object as dropped before dropping and deallocating it
-                // This feature is used only in weak pointers, so do this only if they're enabled
-                #[cfg(feature = "weak-ptr")]
-                {
-                    self.counter_marker().set_dropped(true);
-                }
-
-                // SAFETY: we're the only one to have a pointer to this allocation
-                unsafe {
-                    drop_in_place(self.inner().get_elem_mut());
-
-                    #[cfg(feature = "pedantic-debug-assertions")]
-                    debug_assert_eq!(
-                        0, self.counter_marker().counter(),
-                        "Trying to deallocate a CcBox with a reference counter > 0"
-                    );
-
-                    cc_dealloc(self.inner, layout, state);
-                }
-                // _dropping_guard is dropped here, resetting state.dropping
-            });
-        } else {
-            handle_possible_cycle(self);
-        }
+        /*   
+           // A CcBox can be marked traced only during collections while being into a list different than POSSIBLE_CYCLES.
+           // In this case, no further action has to be taken, except decrementing the reference counter.
+           if self.counter_marker().is_traced() {
+               decrement_counter(self);
+               return;
+           }
+   
+           let r = self.counter_marker().counter();
+   
+           if self.counter_marker().counter() == 1 {
+               // Only us have a pointer to this allocation, deallocate!
+   
+               state(|state| {
+                   #[cfg(feature = "finalization")]
+                   if self.counter_marker().needs_finalization() {
+                       let _finalizing_guard = replace_state_field!(finalizing, true, state);
+   
+                       // Set finalized
+                       self.counter_marker().set_finalized(true);
+   
+                       self.inner().get_elem().finalize();
+   
+                       if self.counter_marker().counter() != 1 {
+                           // The object has been resurrected
+                           handle_possible_cycle(self);
+                           return;
+                       }
+                       // _finalizing_guard is dropped here, resetting state.finalizing
+                   }
+   
+                   decrement_counter(self);
+   
+                   //TODO add to modifications that the mutator will send
+   
+                   //remove_from_list(self.inner.cast());
+   
+                   let _dropping_guard = replace_state_field!(dropping, true, state);
+                   let layout = self.inner().layout();
+   
+                   // Set the object as dropped before dropping and deallocating it
+                   // This feature is used only in weak pointers, so do this only if they're enabled
+                   #[cfg(feature = "weak-ptr")]
+                   {
+                       self.counter_marker().set_dropped(true);
+                   }
+   
+                   // SAFETY: we're the only one to have a pointer to this allocation
+                   unsafe {
+                       drop_in_place(self.inner().get_elem_mut());
+   
+                       #[cfg(feature = "pedantic-debug-assertions")]
+                       debug_assert_eq!(
+                           0, self.counter_marker().counter(),
+                           "Trying to deallocate a CcBox with a reference counter > 0"
+                       );
+   
+                       cc_dealloc(self.inner, layout, state);
+                   }
+                   // _dropping_guard is dropped here, resetting state.dropping
+               });
+           } else {
+               handle_possible_cycle(self);
+           }*/
     }
 }
 
@@ -354,7 +386,7 @@ pub(crate) struct CcBox<T: ?Sized + Trace + 'static> {
     fat_ptr: NonNull<dyn InternalTrace>,
 
     counter_marker: CounterMarker,
-    //_phantom: PhantomData<Rc<()>>, // Make CcBox !Send and !Sync
+    _phantom: PhantomData<Arc<()>>, // Make CcBox !Send and !Sync
 
     // This UnsafeCell is necessary, since we want to execute Drop::drop (which takes an &mut)
     // for elem but still have access to the other fields of CcBox
@@ -384,7 +416,7 @@ impl<T: Trace + 'static> CcBox<T> {
                     #[cfg(not(feature = "nightly"))]
                     fat_ptr: NonNull::new_unchecked(ptr.as_ptr() as *mut dyn InternalTrace),
                     counter_marker: CounterMarker::new_with_counter_to_one(already_finalized),
-                    //  _phantom: PhantomData,
+                    _phantom: PhantomData,
                     elem: UnsafeCell::new(t),
                 },
             );
@@ -454,67 +486,6 @@ impl<T: ?Sized + Trace + 'static> Finalize for CcBox<T> {
     }
 }
 
-#[inline]
-pub(crate) fn remove_from_list(ptr: NonNull<CcBox<()>>) {
-    let counter_marker = unsafe { ptr.as_ref() }.counter_marker();
-
-    // Check if ptr is in possible_cycles list
-    if counter_marker.is_in_possible_cycles() {
-        // ptr is in the list, remove it
-        let _ = POSSIBLE_CYCLES.try_with(|pc| {
-            let mut list = pc.borrow_mut();
-            // Confirm is_in_possible_cycles() in debug builds
-            #[cfg(feature = "pedantic-debug-assertions")]
-            debug_assert!(list.contains(ptr));
-
-            counter_marker.mark(Mark::NonMarked);
-            list.remove(ptr);
-        });
-    } else {
-        // ptr is not in the list
-
-        // Confirm !is_in_possible_cycles() in debug builds.
-        // This is safe to do since we're not putting the CcBox into the list
-        #[cfg(feature = "pedantic-debug-assertions")]
-        debug_assert! {
-            POSSIBLE_CYCLES.try_with(|pc| {
-                !pc.borrow().contains(ptr)
-            }).unwrap_or(true)
-        };
-    }
-}
-
-#[inline]
-pub(crate) fn add_to_list(ptr: NonNull<CcBox<()>>) {
-    let counter_marker = unsafe { ptr.as_ref() }.counter_marker();
-
-    let _ = POSSIBLE_CYCLES.try_with(|pc| {
-        let mut list = pc.borrow_mut();
-
-        // Check if ptr is in possible_cycles list since we have to move it at its start
-        if counter_marker.is_in_possible_cycles() {
-            // Confirm is_in_possible_cycles() in debug builds
-            #[cfg(feature = "pedantic-debug-assertions")]
-            debug_assert!(list.contains(ptr));
-
-            list.remove(ptr);
-            // In this case we don't need to update the mark since we put it back into the list
-        } else {
-            // Confirm !is_in_possible_cycles() in debug builds
-            #[cfg(feature = "pedantic-debug-assertions")]
-            debug_assert!(!list.contains(ptr));
-            debug_assert!(counter_marker.is_not_marked());
-
-            // Mark it
-            counter_marker.mark(Mark::PossibleCycles);
-        }
-        // Add to the list
-        //
-        // Make sure this operation is the first after the if-else, since the CcBox is in
-        // an invalid state now (it's marked Mark::PossibleCycles, but it isn't into the list)
-        list.add(ptr);
-    });
-}
 
 // Functions in common between every CcBox<_>
 impl CcBox<()> {
@@ -614,7 +585,7 @@ impl CcBox<()> {
                     // Not already marked
 
                     // Make sure ptr is not in POSSIBLE_CYCLES list
-                    remove_from_list(ptr);
+                    //    remove_from_list(ptr);
 
                     counter_marker.reset_tracing_counter();
                     let res = counter_marker.increment_tracing_counter();

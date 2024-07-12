@@ -1,5 +1,7 @@
 use alloc::alloc::{alloc, dealloc, handle_alloc_error, Layout};
 use core::ptr::NonNull;
+#[cfg(feature = "std")]
+pub(crate) use std::thread_local as rust_cc_thread_local;
 
 use crate::{CcBox, Trace};
 use crate::state::State;
@@ -17,9 +19,12 @@ pub(crate) unsafe fn cc_alloc<T: Trace + 'static>(layout: Layout, state: &State)
 pub(crate) unsafe fn cc_dealloc<T: ?Sized + Trace + 'static>(
     ptr: NonNull<CcBox<T>>,
     layout: Layout,
-    state: &State
+    state: &State,
 ) {
-    state.record_deallocation(layout);
+
+
+    // era usato per il threashold, ma l'acclocator non conosce quanti byte sono stati allocati e panica
+    //   state.record_deallocation(layout);
     dealloc(ptr.cast().as_ptr(), layout);
 }
 
@@ -44,8 +49,7 @@ pub(crate) unsafe fn dealloc_other<T>(ptr: NonNull<T>) {
 #[cold]
 pub(crate) fn cold() {}
 
-#[cfg(feature = "std")]
-pub(crate) use std::thread_local as rust_cc_thread_local; // Use the std's macro when std is enabled
+// Use the std's macro when std is enabled
 
 #[cfg(not(feature = "std"))]
 macro_rules! rust_cc_thread_local {
@@ -103,7 +107,7 @@ mod no_std_thread_locals {
 
         #[inline]
         pub(crate) fn with<F, R>(&self, f: F) -> R
-            where
+        where
             F: FnOnce(&T) -> R,
         {
             f(&self.value)
@@ -111,7 +115,7 @@ mod no_std_thread_locals {
 
         #[inline]
         pub(crate) fn try_with<F, R>(&self, f: F) -> Result<R, AccessError>
-            where
+        where
             F: FnOnce(&T) -> R,
         {
             Ok(f(&self.value))
@@ -122,6 +126,7 @@ mod no_std_thread_locals {
 #[cfg(all(test, not(feature = "std")))]
 mod no_std_tests {
     use core::cell::Cell;
+
     use super::no_std_thread_locals::NoStdLocalKey;
 
     rust_cc_thread_local! {

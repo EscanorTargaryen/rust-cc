@@ -154,14 +154,16 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
 pub use cc::Cc;
+pub use cc::THREAD_ACTIONS;
 #[cfg(feature = "derive")]
 pub use derives::{Finalize, Trace};
 pub use trace::{Context, Finalize, Trace};
 
-use crate::cc::{CcBox, CONDVAR};
+use crate::cc::CcBox;
+use crate::collector::CONDVAR;
 use crate::counter_marker::Mark;
 use crate::list::*;
-use crate::state::{replace_state_field, State, try_state};
+use crate::state::{replace_state_field, State};
 use crate::trace::ContextInner;
 use crate::utils::*;
 
@@ -180,8 +182,6 @@ mod utils;
 
 pub mod collector;
 
-pub use cc::COLLECTOR;
-
 #[cfg(feature = "auto-collect")]
 pub mod config;
 
@@ -194,9 +194,6 @@ pub mod weak;
 #[cfg(feature = "cleaners")]
 pub mod cleaners;
 
-rust_cc_thread_local! {
-    pub(crate) static POSSIBLE_CYCLES: RefCell<CountedList> = RefCell::new(CountedList::new());
-}
 
 /// Immediately executes the cycle collection algorithm and collects garbage cycles.
 ///
@@ -214,21 +211,23 @@ pub fn collect_cycles() {
 #[cfg(feature = "auto-collect")]
 #[inline(never)]
 pub(crate) fn trigger_collection() {
-    let _ = try_state(|state| {
-        if state.is_collecting() {
-            return;
-        }
 
-        let _ = POSSIBLE_CYCLES.try_with(|pc| {
-            if config::config(|config| config.should_collect(state, pc)).unwrap_or(false) {
-                CONDVAR.get().unwrap().notify_one();
-
-                //  collect(state, pc);
-
-                // adjust_trigger_point(state);
-            }
-        });
-    });
+    //TODO se volessi triggerare in automatico il collezionamento, i mutater non conoscono lo stato totale, quindi magari potrebbero triggerare il collezionamento in base a qualcosa che conoscono
+    /* let _ = try_state(|state| {
+         if state.is_collecting() {
+             return;
+         }
+ 
+        
+             if config::config(|config| config.should_collect(state, )).unwrap_or(false) {
+                 CONDVAR.get().unwrap().notify_one();
+ 
+                 //  collect(state, pc);
+ 
+                 // adjust_trigger_point(state);
+             }
+       
+     });*/
 }
 
 #[cfg(feature = "auto-collect")]
@@ -236,7 +235,7 @@ fn adjust_trigger_point(state: &State) {
     let _ = config::config(|config| config.adjust(state));
 }
 
-fn collect(state: &State, possible_cycles: &RefCell<CountedList>) {
+fn collect(state: &State, possible_cycles: &mut CountedList) {
     state.set_collecting(true);
     state.increment_executions_count();
 
@@ -279,19 +278,15 @@ fn collect(state: &State, possible_cycles: &RefCell<CountedList>) {
         __collect(state, possible_cycles);
     }
 
-    let s = possible_cycles;
-   
     #[cfg(not(feature = "finalization"))]
     if !is_empty(possible_cycles) {
-        
-       
         __collect(state, possible_cycles);
     }
 
     // _drop_guard is dropped here, setting state.collecting to false
 }
 
-fn __collect(state: &State, possible_cycles: &RefCell<CountedList>) {
+fn __collect(state: &State, possible_cycles: &mut CountedList) {
     let mut non_root_list = List::new();
     {
         let mut root_list = List::new();
@@ -369,13 +364,13 @@ fn __collect(state: &State, possible_cycles: &RefCell<CountedList>) {
 }
 
 #[inline]
-fn is_empty(list: &RefCell<CountedList>) -> bool {
-    list.borrow().is_empty()
+fn is_empty(list: &mut CountedList) -> bool {
+    list.is_empty()
 }
 
 #[inline]
-fn get_and_remove_first(list: &RefCell<CountedList>) -> Option<NonNull<CcBox<()>>> {
-    list.borrow_mut().remove_first()
+fn get_and_remove_first(list: &mut CountedList) -> Option<NonNull<CcBox<()>>> {
+    list.remove_first()
 }
 
 #[inline]

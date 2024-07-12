@@ -2,7 +2,7 @@ use std::sync::Mutex;
 use std::thread;
 use std::thread::sleep;
 
-use rust_cc::{Cc, collect_cycles, COLLECTOR, Context, Finalize, Trace};
+use rust_cc::{Cc, collect_cycles, Context, Finalize, THREAD_ACTIONS, Trace};
 
 struct Cyclic {
     cyclic: Mutex<Option<Cc<Self>>>,
@@ -16,12 +16,18 @@ unsafe impl Trace for Cyclic {
 
 fn main() {
     {
+        let acyclic = Cc::new(4);
+
+        let s = acyclic.clone();
+
+
         let cyclic1 = Cc::new(Cyclic {
             cyclic: Mutex::new(None),
         });
         let cyclic2 = Cc::new(Cyclic {
             cyclic: Mutex::new(None),
         });
+
 
         *cyclic1.cyclic.lock().unwrap() = Some(cyclic2.clone());
         *cyclic2.cyclic.lock().unwrap() = Some(cyclic1.clone());
@@ -41,10 +47,12 @@ fn main() {
         s.join().unwrap();
     }
 
- 
+
+    { let l = THREAD_ACTIONS.lock().unwrap(); }
+
 
     collect_cycles();
-    
-    sleep(std::time::Duration::from_secs(10));
-    
+
+
+    sleep(std::time::Duration::from_secs(20));
 }
