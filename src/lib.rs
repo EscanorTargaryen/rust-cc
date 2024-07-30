@@ -141,11 +141,12 @@ cleanable.clean();
 #![cfg_attr(doc_auto_cfg, feature(doc_auto_cfg))]
 #![cfg_attr(not(feature = "std"), no_std)]
 
-#![deny(rustdoc::broken_intra_doc_links)]
+//#![deny(rustdoc::broken_intra_doc_links)]
 #![allow(clippy::thread_local_initializer_can_be_made_const)]
 #![allow(unexpected_cfgs)]
 
 extern crate alloc;
+extern crate core;
 
 use core::cell::RefCell;
 use core::mem;
@@ -193,6 +194,8 @@ pub mod weak;
 
 #[cfg(feature = "cleaners")]
 pub mod cleaners;
+
+pub mod log_pointer;
 
 
 /// Immediately executes the cycle collection algorithm and collects garbage cycles.
@@ -333,7 +336,7 @@ fn __collect(state: &State, possible_cycles: &mut CountedList) {
                 // next iteration of the loop, which will automatically check for resurrected objects
                 // using the same algorithm of the initial tracing. This makes it more difficult to
                 // create memory leaks accidentally using finalizers than in the previous implementation.
-                let mut pc = possible_cycles.borrow_mut();
+               // let mut pc = possible_cycles.borrow_mut();
 
                 // pc is already marked PossibleCycles, while non_root_list is not.
                 // non_root_list have to be added to pc after having been marked.
@@ -341,18 +344,18 @@ fn __collect(state: &State, possible_cycles: &mut CountedList) {
                 // append the other to it in O(1), since we already know the last element of pc from the marking.
                 // This avoids iterating unnecessarily both lists and the need to update many pointers.
 
-                let old_size = pc.size();
+              //  let old_size = pc.size();
 
                 // SAFETY: non_root_list_size is calculated before and it's the size of non_root_list
-                unsafe {
-                    pc.swap_list(&mut non_root_list, non_root_list_size);
-                }
+             //   unsafe {
+                //     pc.swap_list(&mut non_root_list, non_root_list_size);
+                //}
                 // SAFETY: swap_list swapped pc and non_root_list, so every element inside non_root_list is already
                 //         marked PossibleCycles (because it was pc) and now old_size is the size of non_root_list
-                unsafe {
-                    pc.mark_self_and_append(Mark::PossibleCycles, non_root_list, old_size);
-                }
-                drop(pc); // Useless, but better be explicit here in case more code is added below this line
+                //    unsafe {
+                //         pc.mark_self_and_append(Mark::PossibleCycles, non_root_list, old_size);
+                //      }
+                //  drop(pc); // Useless, but better be explicit here in case more code is added below this line
             }
         }
 

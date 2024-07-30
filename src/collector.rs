@@ -1,10 +1,11 @@
+use std::collections::HashSet;
 use std::mem::swap;
 use std::ptr::NonNull;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 
 use crate::{collect, THREAD_ACTIONS};
-use crate::cc::{Action, CcBox};
+use crate::cc::{Action, ActionEntry, CcBox};
 use crate::counter_marker::Mark;
 use crate::list::{CountedList, ListMethods};
 use crate::state::{replace_state_field, State, try_state};
@@ -37,11 +38,10 @@ pub fn init_collector() {
 
                     let mut void = THREAD_ACTIONS.lock().unwrap();
 
-                    let mut changes = Vec::new();
-
+                    let mut changes: Vec<ActionEntry> = Vec::new();
+                    
                     swap(&mut *void, &mut changes);
-
-
+                    
                     for a in &changes {
                         unsafe {
                             if let Action::Add = a.action {
@@ -79,17 +79,19 @@ pub fn init_collector() {
                         }
                     }
 
+                    //lista dei possible cycles preso dalle azioni effettuate
+                    let mut ps = HashSet::new();
 
-                    //inizio con l'algoritmo di collezionamento
+                    for a in &changes {
+                        ps.insert(a.cc_box);
+                    }
 
-                    //seconda fase
-                    //TODO
 
-                    //prima fase
+              
 
                     collect(state, &mut possible_cycles);
 
-                    //preparazione seconda fase
+                  
                 });
             }
         })
