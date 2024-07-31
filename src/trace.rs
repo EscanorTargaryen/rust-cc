@@ -20,6 +20,8 @@ use std::{
     path::{Path, PathBuf},
     ffi::{OsStr, OsString}
 };
+use core::ptr::NonNull;
+use crate::cc::CcBox;
 
 use crate::List;
 
@@ -137,6 +139,9 @@ pub struct Context<'a> {
 }
 
 pub(crate) enum ContextInner<'a> {
+    Copy {
+        copy_vec: &'a mut Vec<NonNull<CcBox<()>>>,
+    },
     Counting {
         root_list: &'a mut List,
         non_root_list: &'a mut List,

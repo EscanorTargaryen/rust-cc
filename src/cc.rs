@@ -202,13 +202,13 @@ impl<T: ?Sized + Trace + 'static> Cc<T> {
         self.inner
     }
 
-    #[cfg(feature = "weak-ptr")] // Currently used only here
+   
     #[inline(always)]
     #[must_use]
     pub(crate) fn __new_internal(inner: NonNull<CcBox<T>>) -> Cc<T> {
         Cc {
             inner,
-            // _phantom: PhantomData,
+             _phantom: PhantomData,
         }
     }
 }
@@ -535,6 +535,9 @@ impl CcBox<()> {
     pub(super) fn start_tracing(ptr: NonNull<Self>, ctx: &mut Context<'_>) {
         let counter_marker = unsafe { ptr.as_ref() }.counter_marker();
         match ctx.inner() {
+            ContextInner::Copy { .. } => {
+                unreachable!()
+            }
             ContextInner::Counting { root_list, .. } => {
                 // ptr is NOT into POSSIBLE_CYCLES list: ptr has just been removed from
                 // POSSIBLE_CYCLES by rust_cc::collect() (see lib.rs) before calling this function
@@ -577,6 +580,10 @@ impl CcBox<()> {
 
         let counter_marker = unsafe { ptr.as_ref() }.counter_marker();
         match ctx.inner() {
+            ContextInner::Copy { copy_vec } => {
+                copy_vec.push(ptr);
+                false
+            }
             ContextInner::Counting {
                 root_list,
                 non_root_list,
