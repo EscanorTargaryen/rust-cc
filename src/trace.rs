@@ -1,3 +1,7 @@
+use alloc::boxed::Box;
+use alloc::ffi::CString;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::ffi::CStr;
 use core::marker::PhantomData;
@@ -7,22 +11,18 @@ use core::num::{
     NonZeroU16, NonZeroU32, NonZeroU64, NonZeroU8, NonZeroUsize,
 };
 use core::panic::AssertUnwindSafe;
+use core::ptr::NonNull;
 use core::sync::atomic::{
     AtomicBool, AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32,
     AtomicU64, AtomicU8, AtomicUsize,
 };
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::ffi::CString;
-use alloc::string::String;
 #[cfg(feature = "std")]
 use std::{
+    ffi::{OsStr, OsString},
     path::{Path, PathBuf},
-    ffi::{OsStr, OsString}
 };
-use core::ptr::NonNull;
-use crate::cc::CcBox;
 
+use crate::cc::CcBox;
 use crate::List;
 
 /// Trait to finalize objects before freeing them.
@@ -55,7 +55,7 @@ pub trait Finalize {
     ///
     /// By default, objects are finalized only once. Use the method [`Cc::finalize_again`] to make finalization happen again for a certain object.
     /// Also, objects created during the execution of a finalizer are not automatically finalized.
-    /// 
+    ///
     /// # Default implementation
     ///
     /// The default implementation is empty.
@@ -130,6 +130,7 @@ pub unsafe trait Trace: Finalize {
     ///
     /// [`Cc`]: crate::Cc
     fn trace(&self, ctx: &mut Context<'_>);
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>);
 }
 
 /// The tracing context provided to every invocation of [`Trace::trace`].
@@ -139,9 +140,6 @@ pub struct Context<'a> {
 }
 
 pub(crate) enum ContextInner<'a> {
-    Copy {
-        copy_vec: &'a mut Vec<NonNull<CcBox<()>>>,
-    },
     Counting {
         root_list: &'a mut List,
         non_root_list: &'a mut List,
@@ -164,12 +162,30 @@ impl<'b> Context<'b> {
 
     #[inline]
     pub(crate) fn inner<'a>(&'a mut self) -> &'a mut ContextInner<'b>
-        where
+    where
         'b: 'a,
     {
         &mut self.inner
     }
 }
+
+pub struct CopyContext<'a> {
+    pub(crate) copy_vec: &'a mut Vec<NonNull<CcBox<()>>>,
+    _phantom: PhantomData<*mut &'a mut ()>, // Make CopyContext !Send and !Sync
+}
+
+
+impl<'a> CopyContext<'a> {
+    #[inline]
+    #[must_use]
+    pub(crate) fn new(copy_vec: &'a mut Vec<NonNull<CcBox<()>>>) -> CopyContext {
+        CopyContext {
+            copy_vec,
+            _phantom: PhantomData,
+        }
+    }
+}
+
 
 // #################################
 // #          Trace impls          #
@@ -181,6 +197,9 @@ macro_rules! empty_trace {
         unsafe impl $crate::trace::Trace for $this {
             #[inline(always)]
             fn trace(&self, _: &mut $crate::trace::Context<'_>) {}
+            
+            #[inline(always)]
+            fn make_copy(&mut self, _: &mut $crate::trace::CopyContext<'_>) {}
         }
 
         impl $crate::trace::Finalize for $this {
@@ -261,6 +280,9 @@ impl<T> Finalize for MaybeUninit<T> {
 unsafe impl<T> Trace for PhantomData<T> {
     #[inline(always)]
     fn trace(&self, _: &mut Context<'_>) {}
+
+    #[inline(always)]
+    fn make_copy(&mut self, _: &mut CopyContext<'_>) {}
 }
 
 impl<T> Finalize for PhantomData<T> {}
@@ -273,6 +295,12 @@ macro_rules! deref_trace {
             fn trace(&self, ctx: &mut $crate::trace::Context<'_>) {
                 let deref: &$generic = <$this as ::core::ops::Deref>::deref(self);
                 <$generic as $crate::trace::Trace>::trace(deref, ctx);
+            }
+            
+            #[inline]
+            fn make_copy(&mut self, ctx: &mut $crate::trace::CopyContext<'_>) {
+                let deref: &mut $generic = <$this as ::core::ops::DerefMut>::deref_mut(self);
+                <$generic as $crate::trace::Trace>::make_copy(deref, ctx);
             }
         }
 
@@ -319,6 +347,10 @@ unsafe impl<T: ?Sized + Trace + 'static> Trace for RefCell<T> {
             borrow.trace(ctx);
         }
     }
+
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+        todo!()
+    }
 }
 
 impl<T: ?Sized + Finalize + 'static> Finalize for RefCell<T> {
@@ -335,6 +367,12 @@ unsafe impl<T: Trace + 'static> Trace for Option<T> {
     fn trace(&self, ctx: &mut Context<'_>) {
         if let Some(inner) = self {
             inner.trace(ctx);
+        }
+    }
+
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+        if let Some(inner) = self {
+            inner.make_copy(ctx);
         }
     }
 }
@@ -356,6 +394,13 @@ unsafe impl<R: Trace + 'static, E: Trace + 'static> Trace for Result<R, E> {
             Err(err) => err.trace(ctx),
         }
     }
+
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+        match self {
+            Ok(ok) => ok.make_copy(ctx),
+            Err(err) => err.make_copy(ctx),
+        }
+    }
 }
 
 impl<R: Finalize + 'static, E: Finalize + 'static> Finalize for Result<R, E> {
@@ -373,6 +418,12 @@ unsafe impl<T: Trace + 'static, const N: usize> Trace for [T; N] {
     fn trace(&self, ctx: &mut Context<'_>) {
         for elem in self {
             elem.trace(ctx);
+        }
+    }
+
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+        for elem in self {
+            elem.make_copy(ctx);
         }
     }
 }
@@ -393,6 +444,12 @@ unsafe impl<T: Trace + 'static> Trace for [T] {
             elem.trace(ctx);
         }
     }
+
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+        for elem in self {
+            elem.make_copy(ctx);
+        }
+    }
 }
 
 impl<T: Finalize + 'static> Finalize for [T] {
@@ -409,6 +466,12 @@ unsafe impl<T: Trace + 'static> Trace for Vec<T> {
     fn trace(&self, ctx: &mut Context<'_>) {
         for elem in self {
             elem.trace(ctx);
+        }
+    }
+
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+        for elem in self {
+            elem.make_copy(ctx);
         }
     }
 }
@@ -434,6 +497,17 @@ macro_rules! tuple_finalize_trace {
                     ($($args,)*) => {
                         $(
                             <$args as $crate::trace::Trace>::trace($args, ctx);
+                        )*
+                    }
+                }
+            }
+            
+            #[inline]
+            fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+                match self {
+                    ($($args,)*) => {
+                        $(
+                            <$args as $crate::trace::Trace>::make_copy($args, ctx);
                         )*
                     }
                 }

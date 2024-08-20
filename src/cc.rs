@@ -15,7 +15,7 @@ use crate::collector::init_collector;
 use crate::counter_marker::{CounterMarker, Mark};
 use crate::list::ListMethods;
 use crate::state::{state, State};
-use crate::trace::{Context, ContextInner, Finalize, Trace};
+use crate::trace::{Context, ContextInner, CopyContext, Finalize, Trace};
 use crate::utils::*;
 
 pub enum Action {
@@ -202,13 +202,13 @@ impl<T: ?Sized + Trace + 'static> Cc<T> {
         self.inner
     }
 
-   
+
     #[inline(always)]
     #[must_use]
     pub(crate) fn __new_internal(inner: NonNull<CcBox<T>>) -> Cc<T> {
         Cc {
             inner,
-             _phantom: PhantomData,
+            _phantom: PhantomData,
         }
     }
 }
@@ -370,6 +370,12 @@ unsafe impl<T: ?Sized + Trace + 'static> Trace for Cc<T> {
             self.inner().get_elem().trace(ctx);
         }
     }
+    
+    #[inline]
+    #[track_caller]
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+        ctx.copy_vec.push(self.inner.cast());
+    }
 }
 
 impl<T: ?Sized + Trace + 'static> Finalize for Cc<T> {}
@@ -477,6 +483,10 @@ unsafe impl<T: ?Sized + Trace + 'static> Trace for CcBox<T> {
     fn trace(&self, ctx: &mut Context<'_>) {
         self.get_elem().trace(ctx);
     }
+
+    fn make_copy(&mut self, _: &mut CopyContext<'_>) {
+        unreachable!();
+    }
 }
 
 impl<T: ?Sized + Trace + 'static> Finalize for CcBox<T> {
@@ -535,9 +545,6 @@ impl CcBox<()> {
     pub(super) fn start_tracing(ptr: NonNull<Self>, ctx: &mut Context<'_>) {
         let counter_marker = unsafe { ptr.as_ref() }.counter_marker();
         match ctx.inner() {
-            ContextInner::Copy { .. } => {
-                unreachable!()
-            }
             ContextInner::Counting { root_list, .. } => {
                 // ptr is NOT into POSSIBLE_CYCLES list: ptr has just been removed from
                 // POSSIBLE_CYCLES by rust_cc::collect() (see lib.rs) before calling this function
@@ -580,10 +587,6 @@ impl CcBox<()> {
 
         let counter_marker = unsafe { ptr.as_ref() }.counter_marker();
         match ctx.inner() {
-            ContextInner::Copy { copy_vec } => {
-                copy_vec.push(ptr);
-                false
-            }
             ContextInner::Counting {
                 root_list,
                 non_root_list,

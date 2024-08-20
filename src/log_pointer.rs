@@ -4,7 +4,7 @@ use std::sync::{LockResult, Mutex, MutexGuard, TryLockResult};
 
 use crate::{Cc, Context, Finalize, Trace};
 use crate::cc::CcBox;
-use crate::trace::ContextInner;
+use crate::trace::CopyContext;
 
 pub struct ObjectCopy {
     copy: Vec<NonNull<CcBox<()>>>,
@@ -33,7 +33,7 @@ pub struct LoggedMutex<T: Trace + ?Sized + 'static> {
 }
 
 impl<T: Trace> LoggedMutex<T> {
-    fn new(value: T) -> Self {
+    pub fn new(value: T) -> Self {
         Self {
             log_pointer: LogPointer::new(),
             mutex: Mutex::new(value),
@@ -42,15 +42,13 @@ impl<T: Trace> LoggedMutex<T> {
 }
 
 impl<T: Trace + ?Sized> LoggedMutex<T> {
-    fn log_copy<E>(&self, result: &Result<MutexGuard<'_, T>, E>) {
-        if let Ok(r) = result {
+    fn log_copy<E>(&self, result: &mut Result<MutexGuard<'_, T>, E>) {
+        if let Ok(result) = result {
             let mut log = self.log_pointer.mutex.lock().unwrap();
             if log.is_none() {
                 let mut vec = Vec::new();
-                let mut ctx = Context::new(ContextInner::Copy {
-                    copy_vec: &mut vec
-                });
-                r.trace(&mut ctx);
+                let mut ctx = CopyContext::new(&mut vec);
+                result.make_copy(&mut ctx);
                 let obj = ObjectCopy {
                     copy: vec,
                 };
@@ -62,17 +60,17 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
 
 
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
-        let result = self.mutex.lock();
+        let mut result = self.mutex.lock();
 
-        self.log_copy(&result);
+        self.log_copy(&mut result);
 
         result
     }
 
     pub fn try_lock(&self) -> TryLockResult<MutexGuard<'_, T>> {
-        let result = self.mutex.try_lock();
+        let mut result = self.mutex.try_lock();
 
-        self.log_copy(&result);
+        self.log_copy(&mut result);
 
         result
     }
@@ -99,46 +97,54 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
 
         self.mutex.get_mut()
     }
-}
+} //FIXME crea un logpoiner solo se si sta collezionando
 
 unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
     fn trace(&self, ctx: &mut Context<'_>) {
-        match ctx.inner() {
-            ContextInner::Copy { copy_vec } => {
-                let object = self.log_pointer.mutex.lock().unwrap().take();
-                if let Some(obj) = object {
-                    copy_vec.extend(obj.copy.iter());
+        let object = self.log_pointer.mutex.lock().unwrap();
 
-                    return;
-                }
+        if let Some(obj) = &*object {
+            obj.copy.iter().map(|el| {
+                ManuallyDrop::new(Cc::__new_internal(*el))
+            }).for_each(|el| {
+                el.trace(ctx);
+            });
 
-                drop(object);
+            return;
+        } else {
+            drop(object);
 
-
-                let result = self.mutex.try_lock();
-
-                if let Ok(guard) = result {
-                    guard.trace(ctx);
-                }
-            }
-            _ => {
+            if let Ok(r) = self.mutex.try_lock() {
+                r.trace(ctx);
+            } else {
                 let object = self.log_pointer.mutex.lock().unwrap();
 
-
-                if let Some(obj) = &*object { //FIXME crea un logpoiner solo se si sta collezionando
+                if let Some(obj) = &*object {
                     obj.copy.iter().map(|el| {
                         ManuallyDrop::new(Cc::__new_internal(*el))
                     }).for_each(|el| {
                         el.trace(ctx);
                     });
-
-
-                    return;
-                } else {
-
-                    // se sei nella prima fase, se il mutex è lockatto ingora, nella seconda fase devi aspettare e continare il tracciamento
                 }
             }
+
+            // se sei nella prima fase, se il mutex è lockatto ingora, nella seconda fase devi aspettare e continare il tracciamento
+            //PS ho fatto un mix, se è accessibile traccio, altrimenti aspetto che sia accessibile e poi traccio
+        }
+    }
+
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+        let object = self.log_pointer.mutex.get_mut();
+        if let Some(obj) = object.unwrap() {
+            ctx.copy_vec.extend(obj.copy.iter());
+
+            return;
+        }
+
+        let result = self.mutex.try_lock();
+
+        if let Ok(mut guard) = result {
+            guard.make_copy(ctx);
         }
     }
 }

@@ -1,17 +1,23 @@
-use std::sync::Mutex;
 use std::thread;
 use std::thread::sleep;
 
-use rust_cc::{Cc, collect_cycles, Context, Finalize, THREAD_ACTIONS, Trace};
+use rust_cc::{Cc, collect_cycles, Context, CopyContext, Finalize, THREAD_ACTIONS, Trace};
+use rust_cc::log_pointer::LoggedMutex;
 
 struct Cyclic {
-    cyclic: Mutex<Option<Cc<Self>>>,
+    cyclic: LoggedMutex<Option<Cc<Self>>>,
 }
 
 impl Finalize for Cyclic {}
 
 unsafe impl Trace for Cyclic {
-    fn trace(&self, _: &mut Context<'_>) {}
+    fn trace(&self, ctx: &mut Context<'_>) {
+        self.cyclic.trace(ctx);
+    }
+
+    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+        self.cyclic.make_copy(ctx);
+    }
 }
 
 fn main() {
@@ -22,10 +28,10 @@ fn main() {
 
 
         let cyclic1 = Cc::new(Cyclic {
-            cyclic: Mutex::new(None),
+            cyclic: LoggedMutex::new(None),
         });
         let cyclic2 = Cc::new(Cyclic {
-            cyclic: Mutex::new(None),
+            cyclic: LoggedMutex::new(None),
         });
 
 
@@ -34,10 +40,10 @@ fn main() {
 
         let s = thread::spawn(|| {
             let _cyclic1 = Cc::new(Cyclic {
-                cyclic: Mutex::new(None),
+                cyclic: LoggedMutex::new(None),
             });
             let _cyclic2 = Cc::new(Cyclic {
-                cyclic: Mutex::new(None),
+                cyclic: LoggedMutex::new(None),
             });
 
             *_cyclic1.cyclic.lock().unwrap() = Some(_cyclic2.clone());

@@ -158,7 +158,7 @@ pub use cc::Cc;
 pub use cc::THREAD_ACTIONS;
 #[cfg(feature = "derive")]
 pub use derives::{Finalize, Trace};
-pub use trace::{Context, Finalize, Trace};
+pub use trace::{Context, Finalize, Trace, CopyContext};
 
 use crate::cc::CcBox;
 use crate::collector::CONDVAR;
