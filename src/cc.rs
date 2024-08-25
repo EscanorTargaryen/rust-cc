@@ -11,7 +11,7 @@ use core::ptr::{self, drop_in_place, NonNull};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
 
-use crate::collector::init_collector;
+use crate::collector::{init_collector, remove_from_list};
 use crate::counter_marker::{CounterMarker, Mark};
 use crate::list::ListMethods;
 use crate::state::{state, State};
@@ -588,6 +588,7 @@ impl CcBox<()> {
         let counter_marker = unsafe { ptr.as_ref() }.counter_marker();
         match ctx.inner() {
             ContextInner::Counting {
+                possible_cycles,
                 root_list,
                 non_root_list,
             } => {
@@ -595,7 +596,7 @@ impl CcBox<()> {
                     // Not already marked
 
                     // Make sure ptr is not in POSSIBLE_CYCLES list
-                    //    remove_from_list(ptr);
+                    remove_from_list(ptr, possible_cycles);
 
                     counter_marker.reset_tracing_counter();
                     let res = counter_marker.increment_tracing_counter();

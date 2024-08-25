@@ -24,6 +24,7 @@ use std::{
 
 use crate::cc::CcBox;
 use crate::List;
+use crate::list::CountedList;
 
 /// Trait to finalize objects before freeing them.
 ///
@@ -141,6 +142,7 @@ pub struct Context<'a> {
 
 pub(crate) enum ContextInner<'a> {
     Counting {
+        possible_cycles: &'a mut CountedList,
         root_list: &'a mut List,
         non_root_list: &'a mut List,
     },

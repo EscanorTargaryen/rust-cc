@@ -296,7 +296,7 @@ fn __collect(state: &State, possible_cycles: &mut CountedList) {
 
         while let Some(ptr) = get_and_remove_first(possible_cycles) {
             // remove_first already marks ptr as NonMarked
-            trace_counting(ptr, &mut root_list, &mut non_root_list);
+            trace_counting(ptr, possible_cycles, &mut root_list, &mut non_root_list);
         }
 
         trace_roots(root_list, &mut non_root_list);
@@ -469,10 +469,12 @@ fn deallocate_list(to_deallocate_list: List, state: &State) {
 
 fn trace_counting(
     ptr: NonNull<CcBox<()>>,
+    possible_cycles: &mut CountedList,
     root_list: &mut List,
     non_root_list: &mut List,
 ) {
     let mut ctx = Context::new(ContextInner::Counting {
+        possible_cycles,
         root_list,
         non_root_list,
     });
