@@ -3,6 +3,7 @@ use std::mem::swap;
 use std::ptr::NonNull;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
+use STATES::COLLECTING;
 
 use crate::{collect, THREAD_ACTIONS};
 use crate::cc::{Action, ActionEntry, CcBox};
@@ -16,17 +17,33 @@ pub static COLLECTOR: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 //usage:  CONDVAR.get().clone().unwrap().notify_one();
 pub static CONDVAR: OnceLock<Arc<Condvar>> = OnceLock::new();
 
+pub static COLLECTOR_STATE: Mutex<STATES> = Mutex::new(STATES::SLEEPING);
+
+pub fn is_collecting() -> bool {
+    let state = COLLECTOR_STATE.lock().unwrap();
+    match *state {
+        COLLECTING => true,
+        _ => false,
+    }
+}
+
 pub fn init_collector() {
     let c = CONDVAR.get_or_init(|| Arc::new(Condvar::new()));
     let _ = COLLECTOR.get_or_init(|| {
+      
         thread::spawn(|| {
             let mut possible_cycles: CountedList = CountedList::new();
 
             let m: Mutex<()> = Mutex::new(());
             loop {
-          
                 { let _s = c.wait(m.lock().unwrap()); }
-       
+
+                {
+                    let mut state = COLLECTOR_STATE.lock().unwrap();
+                    *state = COLLECTING;
+                }
+
+
                 //if someone awaken me then I will collect
 
                 let _ = try_state(|state| {
@@ -39,9 +56,9 @@ pub fn init_collector() {
                     let mut void = THREAD_ACTIONS.lock().unwrap();
 
                     let mut changes: Vec<ActionEntry> = Vec::new();
-                    
+
                     swap(&mut *void, &mut changes);
-                    
+
                     for a in &changes {
                         unsafe {
                             if let Action::Add = a.action {
@@ -69,7 +86,7 @@ pub fn init_collector() {
 
                                 if a.cc_box.as_ref().counter_marker().counter() == 0 {
                                     println!("qualcosa sta venendo deallocato");
-                                    
+
                                     drop_elem(a.cc_box, state, &mut possible_cycles)
                                 } else {
                                     //lo marchiamo come possibile ciclo
@@ -86,13 +103,13 @@ pub fn init_collector() {
                         ps.insert(a.cc_box);
                     }
 
-
-              
-
                     collect(state, &mut possible_cycles);
-
-                  
                 });
+
+                {
+                    let mut state = COLLECTOR_STATE.lock().unwrap();
+                    *state = STATES::SLEEPING;
+                }
             }
         })
     });
@@ -162,7 +179,7 @@ pub(crate) fn add_to_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut Counted
     let counter_marker = unsafe { ptr.as_ref() }.counter_marker();
 
     let mut list = possible_cycles;
-    
+
     // Check if ptr is in possible_cycles list since we have to move it at its start
     if counter_marker.is_in_possible_cycles() {
         // Confirm is_in_possible_cycles() in debug builds
@@ -185,4 +202,9 @@ pub(crate) fn add_to_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut Counted
     // Make sure this operation is the first after the if-else, since the CcBox is in
     // an invalid state now (it's marked Mark::PossibleCycles, but it isn't into the list)
     list.add(ptr);
+}
+
+enum STATES {
+    SLEEPING,
+    COLLECTING,
 }

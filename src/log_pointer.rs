@@ -4,6 +4,7 @@ use std::sync::{LockResult, Mutex, MutexGuard, TryLockResult};
 
 use crate::{Cc, Context, Finalize, Trace};
 use crate::cc::CcBox;
+use crate::collector::is_collecting;
 use crate::trace::CopyContext;
 
 pub struct ObjectCopy {
@@ -43,6 +44,9 @@ impl<T: Trace> LoggedMutex<T> {
 
 impl<T: Trace + ?Sized> LoggedMutex<T> {
     fn log_copy<E>(&self, result: &mut Result<MutexGuard<'_, T>, E>) {
+        if !is_collecting() {
+            return;
+        }
         if let Ok(result) = result {
             let mut log = self.log_pointer.mutex.lock().unwrap();
             if log.is_none() {
@@ -111,26 +115,26 @@ unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
             });
 
             return;
-        } else {
-            drop(object);
-
-            if let Ok(r) = self.mutex.try_lock() {
-                r.trace(ctx);
-            } else {
-                let object = self.log_pointer.mutex.lock().unwrap();
-
-                if let Some(obj) = &*object {
-                    obj.copy.iter().map(|el| {
-                        ManuallyDrop::new(Cc::__new_internal(*el))
-                    }).for_each(|el| {
-                        el.trace(ctx);
-                    });
-                }
-            }
-
-            // se sei nella prima fase, se il mutex è lockatto ingora, nella seconda fase devi aspettare e continare il tracciamento
-            //PS ho fatto un mix, se è accessibile traccio, altrimenti aspetto che sia accessibile e poi traccio
         }
+        
+        drop(object);
+
+        if let Ok(r) = self.mutex.try_lock() {
+            r.trace(ctx);
+        } else {
+            let object = self.log_pointer.mutex.lock().unwrap();
+
+            if let Some(obj) = &*object {
+                obj.copy.iter().map(|el| {
+                    ManuallyDrop::new(Cc::__new_internal(*el))
+                }).for_each(|el| {
+                    el.trace(ctx);
+                });
+            }
+        }
+
+        // se sei nella prima fase, se il mutex è lockatto ingora, nella seconda fase devi aspettare e continare il tracciamento
+        //PS ho fatto un mix, se è accessibile traccio, altrimenti aspetto che sia accessibile e poi traccio
     }
 
     fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {

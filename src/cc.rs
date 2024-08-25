@@ -603,9 +603,9 @@ impl CcBox<()> {
 
                     // Check invariant (tracing_counter is always less or equal to counter)
                     debug_assert!(counter_marker.tracing_counter() <= counter_marker.counter());
-
+                    
                     if non_root(counter_marker) {
-                        non_root_list.add(ptr);
+                        non_root_list.add(ptr);//FIXME
                     } else {
                         root_list.add(ptr);
                     }
