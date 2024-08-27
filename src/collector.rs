@@ -1,14 +1,18 @@
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::mem::swap;
 use std::ptr::NonNull;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
+
 use STATES::COLLECTING;
 
 use crate::{collect, THREAD_ACTIONS};
 use crate::cc::{Action, ActionEntry, CcBox};
 use crate::counter_marker::Mark;
 use crate::list::{CountedList, ListMethods};
+use crate::log_pointer::LogPointer;
 use crate::state::{replace_state_field, State, try_state};
 use crate::utils::cc_dealloc;
 
@@ -18,6 +22,9 @@ pub static COLLECTOR: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 pub static CONDVAR: OnceLock<Arc<Condvar>> = OnceLock::new();
 
 pub static COLLECTOR_STATE: Mutex<STATES> = Mutex::new(STATES::SLEEPING);
+pub static COLLECTOR_VERSION: AtomicU64 = AtomicU64::new(0);
+
+pub static LOGS: Mutex<Vec<RefCell<LogPointer>>> = Mutex::new(Vec::new());
 
 pub fn is_collecting() -> bool {
     let state = COLLECTOR_STATE.lock().unwrap();
@@ -30,17 +37,18 @@ pub fn is_collecting() -> bool {
 pub fn init_collector() {
     let c = CONDVAR.get_or_init(|| Arc::new(Condvar::new()));
     let _ = COLLECTOR.get_or_init(|| {
-      
         thread::spawn(|| {
             let mut possible_cycles: CountedList = CountedList::new();
-
             let m: Mutex<()> = Mutex::new(());
+
             loop {
                 { let _s = c.wait(m.lock().unwrap()); }
 
                 {
                     let mut state = COLLECTOR_STATE.lock().unwrap();
                     *state = COLLECTING;
+
+                    COLLECTOR_VERSION.fetch_add(1, Ordering::Relaxed);
                 }
 
 
@@ -102,9 +110,14 @@ pub fn init_collector() {
                     for a in &changes {
                         ps.insert(a.cc_box);
                     }
-
                     collect(state, &mut possible_cycles);
                 });
+
+                {
+                    let mut state = COLLECTOR_STATE.lock().unwrap();
+                    *state = STATES::CLEANING;
+                }
+
 
                 {
                     let mut state = COLLECTOR_STATE.lock().unwrap();
@@ -207,4 +220,5 @@ pub(crate) fn add_to_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut Counted
 enum STATES {
     SLEEPING,
     COLLECTING,
+    CLEANING,
 }
