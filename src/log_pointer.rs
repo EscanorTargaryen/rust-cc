@@ -1,26 +1,34 @@
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
-use std::sync::{LockResult, Mutex, MutexGuard, TryLockResult};
+use std::sync::{Arc, LockResult, Mutex, MutexGuard, TryLockResult};
 use std::sync::atomic::Ordering;
+
+use atomic_refcell::AtomicRefCell;
 
 use crate::{Cc, Context, Finalize, Trace};
 use crate::cc::CcBox;
-use crate::collector::{COLLECTOR_VERSION, is_collecting};
+use crate::collector::{COLLECTOR_VERSION, is_collecting, LOGS};
 use crate::trace::CopyContext;
 
 pub struct ObjectCopy {
-    copy: Vec<NonNull<CcBox<()>>>,
+    pub(crate) copy: AtomicRefCell<Vec<NonNull<CcBox<()>>>>, //TODO make unsafe with NonNull instead of Arc<AtomicRefCell<Vec>>>
 }
+
+unsafe impl Send for ObjectCopy {}
+
+unsafe impl Sync for ObjectCopy {}
 
 
 pub struct LogPointer {
-    mutex: Mutex<Option<ObjectCopy>>, //TODO usa un atomic pointer al posto del mutex
-    version: u64,
+    mutex: Mutex<Option<Arc<ObjectCopy>>>, //TODO usa un atomic pointer al posto del mutex
+    version: u64, //TODO atomico
 }
+
 
 unsafe impl Send for LogPointer {}
 
 unsafe impl Sync for LogPointer {}
+
 
 impl LogPointer {
     pub fn new() -> Self {
@@ -55,13 +63,15 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
                     let mut ctx = CopyContext::new(&mut vec);
                     result.make_copy(&mut ctx);
                     let obj = ObjectCopy {
-                        copy: vec,
+                        copy: AtomicRefCell::new(vec),
                     };
 
-                    log.replace(obj);
+                    let arc = Arc::new(obj);
+                    log.replace(arc.clone());
 
-
-                    //aggiungi a LOGS il logpointer
+                    if let Ok(mut l) = LOGS.lock() {
+                        l.push(arc);
+                    }
                 }
             }
         }
@@ -115,9 +125,8 @@ unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
         match self.log_pointer.version {
             v => {
                 let object = self.log_pointer.mutex.lock().unwrap();
-
                 if let Some(obj) = &*object {
-                    obj.copy.iter().map(|el| {
+                    obj.copy.borrow().iter().map(|el| {
                         ManuallyDrop::new(Cc::__new_internal(*el))
                     }).for_each(|el| {
                         el.trace(ctx);
@@ -133,7 +142,7 @@ unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
                     let object = self.log_pointer.mutex.lock().unwrap();
 
                     if let Some(obj) = &*object {
-                        obj.copy.iter().map(|el| {
+                        obj.copy.borrow().iter().map(|el| {
                             ManuallyDrop::new(Cc::__new_internal(*el))
                         }).for_each(|el| {
                             el.trace(ctx);
@@ -144,14 +153,6 @@ unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
                 //PS ho fatto un mix, se è accessibile traccio, altrimenti aspetto che sia accessibile e poi traccio
             }
             _ => {
-
-                //se nella fase di cleaning non sono riuscito a pulire il logpointer, lo faccio ora
-                if let Ok(mut r) = self.log_pointer.mutex.try_lock() {
-                    if let Some(ref mut obj) = *r {
-                        obj.copy = Vec::new();
-                    }
-                }
-
                 //la versione è diversa, quindi se riesco traccio, altrimenti è vivo
                 if let Ok(r) = self.mutex.try_lock() {
                     r.trace(ctx);
@@ -164,7 +165,7 @@ unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
         let object = self.log_pointer.mutex.get_mut();
 
         if let Some(obj) = object.unwrap() {
-            ctx.copy_vec.extend(obj.copy.iter());
+            ctx.copy_vec.extend(obj.copy.borrow().iter());
             return;
         }
 

@@ -1,10 +1,9 @@
-use std::cell::RefCell;
+use std::{mem, thread};
 use std::collections::HashSet;
 use std::mem::swap;
 use std::ptr::NonNull;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
 
 use STATES::COLLECTING;
 
@@ -12,19 +11,20 @@ use crate::{collect, THREAD_ACTIONS};
 use crate::cc::{Action, ActionEntry, CcBox};
 use crate::counter_marker::Mark;
 use crate::list::{CountedList, ListMethods};
-use crate::log_pointer::LogPointer;
+use crate::log_pointer::ObjectCopy;
 use crate::state::{replace_state_field, State, try_state};
 use crate::utils::cc_dealloc;
 
 pub static COLLECTOR: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 
 //usage:  CONDVAR.get().clone().unwrap().notify_one();
-pub static CONDVAR: OnceLock<Arc<Condvar>> = OnceLock::new();
+pub static CONDVAR: OnceLock<Arc<Condvar>> = OnceLock::new(); //TODO rimuovi Arc
 
 pub static COLLECTOR_STATE: Mutex<STATES> = Mutex::new(STATES::SLEEPING);
+
 pub static COLLECTOR_VERSION: AtomicU64 = AtomicU64::new(0);
 
-pub static LOGS: Mutex<Vec<RefCell<LogPointer>>> = Mutex::new(Vec::new());
+pub static LOGS: Mutex<Vec<Arc<ObjectCopy>>> = Mutex::new(Vec::new());
 
 pub fn is_collecting() -> bool {
     let state = COLLECTOR_STATE.lock().unwrap();
@@ -118,6 +118,13 @@ pub fn init_collector() {
                     *state = STATES::CLEANING;
                 }
 
+                if let Ok(mut l) = LOGS.lock() {
+                    for x in &*l {
+                        mem::swap(&mut *x.copy.borrow_mut(), &mut Vec::new());
+                    }
+
+                    mem::swap(&mut *l, &mut Vec::new());
+                }
 
                 {
                     let mut state = COLLECTOR_STATE.lock().unwrap();
