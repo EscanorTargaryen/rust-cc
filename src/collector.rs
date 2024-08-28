@@ -18,7 +18,7 @@ use crate::utils::cc_dealloc;
 pub static COLLECTOR: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 
 //usage:  CONDVAR.get().clone().unwrap().notify_one();
-pub static CONDVAR: OnceLock<Arc<Condvar>> = OnceLock::new(); //TODO rimuovi Arc
+pub static CONDVAR: OnceLock<Condvar> = OnceLock::new();
 
 pub static COLLECTOR_STATE: Mutex<STATES> = Mutex::new(STATES::SLEEPING);
 
@@ -35,7 +35,7 @@ pub fn is_collecting() -> bool {
 }
 
 pub fn init_collector() {
-    let c = CONDVAR.get_or_init(|| Arc::new(Condvar::new()));
+    let c = CONDVAR.get_or_init(|| Condvar::new());
     let _ = COLLECTOR.get_or_init(|| {
         thread::spawn(|| {
             let mut possible_cycles: CountedList = CountedList::new();

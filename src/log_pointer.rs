@@ -1,7 +1,7 @@
 use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::sync::{Arc, LockResult, Mutex, MutexGuard, TryLockResult};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use atomic_refcell::AtomicRefCell;
 
@@ -21,7 +21,7 @@ unsafe impl Sync for ObjectCopy {}
 
 pub struct LogPointer {
     mutex: Mutex<Option<Arc<ObjectCopy>>>, //TODO usa un atomic pointer al posto del mutex
-    version: u64, //TODO atomico
+    version: AtomicU64,
 }
 
 
@@ -34,7 +34,7 @@ impl LogPointer {
     pub fn new() -> Self {
         Self {
             mutex: Mutex::new(None),
-            version: 0,
+            version: AtomicU64::new(0),
         }
     }
 }
@@ -57,8 +57,9 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
     fn log_copy<E>(&self, result: &mut Result<MutexGuard<'_, T>, E>) {
         if is_collecting() {
             if let Ok(result) = result {
+                let v = COLLECTOR_VERSION.load(Ordering::Relaxed);
                 let mut log = self.log_pointer.mutex.lock().unwrap();
-                if log.is_none() {
+                if v != self.log_pointer.version.load(Ordering::Relaxed) || log.is_none() {
                     let mut vec = Vec::new();
                     let mut ctx = CopyContext::new(&mut vec);
                     result.make_copy(&mut ctx);
@@ -122,41 +123,38 @@ unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
     fn trace(&self, ctx: &mut Context<'_>) {
         let v = COLLECTOR_VERSION.load(Ordering::Relaxed);
 
-        match self.log_pointer.version {
-            v => {
+        if v == self.log_pointer.version.load(Ordering::Relaxed) {
+            let object = self.log_pointer.mutex.lock().unwrap();
+            if let Some(obj) = &*object {
+                obj.copy.borrow().iter().map(|el| {
+                    ManuallyDrop::new(Cc::__new_internal(*el))
+                }).for_each(|el| {
+                    el.trace(ctx);
+                });
+
+                return;
+            }
+            drop(object);
+
+            if let Ok(r) = self.mutex.try_lock() {
+                r.trace(ctx);
+            } else {
                 let object = self.log_pointer.mutex.lock().unwrap();
+
                 if let Some(obj) = &*object {
                     obj.copy.borrow().iter().map(|el| {
                         ManuallyDrop::new(Cc::__new_internal(*el))
                     }).for_each(|el| {
                         el.trace(ctx);
                     });
-
-                    return;
                 }
-                drop(object);
-
-                if let Ok(r) = self.mutex.try_lock() {
-                    r.trace(ctx);
-                } else {
-                    let object = self.log_pointer.mutex.lock().unwrap();
-
-                    if let Some(obj) = &*object {
-                        obj.copy.borrow().iter().map(|el| {
-                            ManuallyDrop::new(Cc::__new_internal(*el))
-                        }).for_each(|el| {
-                            el.trace(ctx);
-                        });
-                    }
-                }
-                // se sei nella prima fase, se il mutex è lockatto ingora, nella seconda fase devi aspettare e continare il tracciamento
-                //PS ho fatto un mix, se è accessibile traccio, altrimenti aspetto che sia accessibile e poi traccio
             }
-            _ => {
-                //la versione è diversa, quindi se riesco traccio, altrimenti è vivo
-                if let Ok(r) = self.mutex.try_lock() {
-                    r.trace(ctx);
-                }
+            // se sei nella prima fase, se il mutex è lockatto ingora, nella seconda fase devi aspettare e continare il tracciamento
+            //PS ho fatto un mix, se è accessibile traccio, altrimenti aspetto che sia accessibile e poi traccio
+        } else {
+            //la versione è diversa, quindi se riesco traccio, altrimenti è vivo
+            if let Ok(r) = self.mutex.try_lock() {
+                r.trace(ctx);
             }
         }
     }
