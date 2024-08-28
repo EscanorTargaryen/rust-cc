@@ -3,12 +3,12 @@ use std::collections::HashSet;
 use std::mem::swap;
 use std::ptr::NonNull;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use STATES::COLLECTING;
 
-use crate::{collect, THREAD_ACTIONS};
-use crate::cc::{Action, ActionEntry, CcBox};
+use crate::collect;
+use crate::cc::{Action, ActionEntry, CcBox, THREAD_ACTIONS};
 use crate::counter_marker::Mark;
 use crate::list::{CountedList, ListMethods};
 use crate::log_pointer::ObjectCopy;
@@ -25,6 +25,8 @@ pub static COLLECTOR_STATE: Mutex<STATES> = Mutex::new(STATES::SLEEPING);
 pub static COLLECTOR_VERSION: AtomicU64 = AtomicU64::new(0);
 
 pub static LOGS: Mutex<Vec<Arc<ObjectCopy>>> = Mutex::new(Vec::new());
+
+pub static STOP: AtomicBool = AtomicBool::new(false);
 
 pub fn is_collecting() -> bool {
     let state = COLLECTOR_STATE.lock().unwrap();
@@ -50,7 +52,6 @@ pub fn init_collector() {
 
                     COLLECTOR_VERSION.fetch_add(1, Ordering::Relaxed);
                 }
-
 
                 //if someone awaken me then I will collect
 
@@ -131,6 +132,10 @@ pub fn init_collector() {
                     let mut state = COLLECTOR_STATE.lock().unwrap();
                     *state = STATES::SLEEPING;
                 }
+
+                if STOP.load(Ordering::Relaxed) {
+                    break;
+                }
             }
         })
     });
@@ -161,7 +166,7 @@ fn drop_elem(element: NonNull<CcBox<()>>, state: &State, possible_cycles: &mut C
             "Trying to deallocate a CcBox with a reference counter > 0"
         );
 
-        cc_dealloc(element.cast::<CcBox<()>>(), layout, state);
+        cc_dealloc(element.cast::<CcBox<()>>(), layout);
 
         // _dropping_guard is dropped here, resetting state.dropping
     }
@@ -175,7 +180,7 @@ pub(crate) fn remove_from_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut Co
     if counter_marker.is_in_possible_cycles() {
         // ptr is in the list, remove it
 
-        let mut list = possible_cycles;
+        let list = possible_cycles;
         // Confirm is_in_possible_cycles() in debug builds
         #[cfg(feature = "pedantic-debug-assertions")]
         debug_assert!(list.contains(ptr));
@@ -199,7 +204,7 @@ pub(crate) fn remove_from_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut Co
 pub(crate) fn add_to_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut CountedList) {
     let counter_marker = unsafe { ptr.as_ref() }.counter_marker();
 
-    let mut list = possible_cycles;
+    let list = possible_cycles;
 
     // Check if ptr is in possible_cycles list since we have to move it at its start
     if counter_marker.is_in_possible_cycles() {
@@ -225,7 +230,7 @@ pub(crate) fn add_to_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut Counted
     list.add(ptr);
 }
 
-enum STATES {
+pub enum STATES {
     SLEEPING,
     COLLECTING,
     CLEANING,

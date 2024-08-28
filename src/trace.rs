@@ -350,7 +350,7 @@ unsafe impl<T: ?Sized + Trace + 'static> Trace for RefCell<T> {
         }
     }
 
-    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
+    fn make_copy(&mut self, _: &mut CopyContext<'_>) {
        unreachable!()
     }
 }

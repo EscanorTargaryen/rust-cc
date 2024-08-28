@@ -20,6 +20,8 @@
 //! exceeds the [`buffered_objects_threshold`][`fn@Config::buffered_objects_threshold`]. This parameter is disabled by default, but can be enabled by
 //! using [`set_buffered_objects_threshold`][`fn@Config::set_buffered_objects_threshold`].
 
+#![allow(dead_code)]
+
 use alloc::rc::Rc;
 use core::cell::RefCell;
 use core::num::NonZeroUsize;

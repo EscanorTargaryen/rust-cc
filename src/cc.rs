@@ -24,9 +24,9 @@ pub enum Action {
     Remove,
 }
 
-pub struct ActionEntry {
-    pub cc_box: NonNull<CcBox<()>>,
-    pub action: Action,
+pub(crate) struct ActionEntry {
+    pub(crate) cc_box: NonNull<CcBox<()>>,
+    pub(crate) action: Action,
 }
 
 unsafe impl Send for ActionEntry {}
@@ -41,7 +41,7 @@ impl ActionEntry {
 }
 
 
-pub static THREAD_ACTIONS: Mutex<Vec<ActionEntry>> = Mutex::new(Vec::new());
+pub(crate) static THREAD_ACTIONS: Mutex<Vec<ActionEntry>> = Mutex::new(Vec::new());
 
 
 /// A thread-local cycle collected pointer.
@@ -270,101 +270,9 @@ impl<T: ?Sized + Trace + 'static> Deref for Cc<T> {
 
 impl<T: ?Sized + Trace + 'static> Drop for Cc<T> {
     fn drop(&mut self) {
-        #[cfg(debug_assertions)]
-        if state(|state| state.is_tracing()) {
-            panic!("Cannot drop while tracing!");
+        if !thread::current().id().eq(&COLLECTOR.get().unwrap().thread().id()) {
+            THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(self.inner.cast(), Action::Remove));
         }
-
-        #[inline]
-        fn decrement_counter<T: ?Sized + Trace + 'static>(cc: &Cc<T>) {
-            // Always decrement the counter
-            // let res = cc.counter_marker().decrement_counter();
-
-
-            if !thread::current().id().eq(&COLLECTOR.get().unwrap().thread().id()) {
-                THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(cc.inner.cast(), Action::Remove));
-            }
-
-
-            //debug_assert!(res.is_ok());
-        }
-
-        #[inline]
-        fn handle_possible_cycle<T: ?Sized + Trace + 'static>(cc: &Cc<T>) {
-            decrement_counter(cc);
-
-            // We know that we're not part of either root_list or non_root_list, since the cc isn't traced
-            //TODO add to modifications that the mutator will send
-            //  add_to_list(cc.inner.cast());
-        }
-
-        decrement_counter(self);
-
-
-        /*   
-           // A CcBox can be marked traced only during collections while being into a list different than POSSIBLE_CYCLES.
-           // In this case, no further action has to be taken, except decrementing the reference counter.
-           if self.counter_marker().is_traced() {
-               decrement_counter(self);
-               return;
-           }
-   
-           let r = self.counter_marker().counter();
-   
-           if self.counter_marker().counter() == 1 {
-               // Only us have a pointer to this allocation, deallocate!
-   
-               state(|state| {
-                   #[cfg(feature = "finalization")]
-                   if self.counter_marker().needs_finalization() {
-                       let _finalizing_guard = replace_state_field!(finalizing, true, state);
-   
-                       // Set finalized
-                       self.counter_marker().set_finalized(true);
-   
-                       self.inner().get_elem().finalize();
-   
-                       if self.counter_marker().counter() != 1 {
-                           // The object has been resurrected
-                           handle_possible_cycle(self);
-                           return;
-                       }
-                       // _finalizing_guard is dropped here, resetting state.finalizing
-                   }
-   
-                   decrement_counter(self);
-   
-                   //TODO add to modifications that the mutator will send
-   
-                   //remove_from_list(self.inner.cast());
-   
-                   let _dropping_guard = replace_state_field!(dropping, true, state);
-                   let layout = self.inner().layout();
-   
-                   // Set the object as dropped before dropping and deallocating it
-                   // This feature is used only in weak pointers, so do this only if they're enabled
-                   #[cfg(feature = "weak-ptr")]
-                   {
-                       self.counter_marker().set_dropped(true);
-                   }
-   
-                   // SAFETY: we're the only one to have a pointer to this allocation
-                   unsafe {
-                       drop_in_place(self.inner().get_elem_mut());
-   
-                       #[cfg(feature = "pedantic-debug-assertions")]
-                       debug_assert_eq!(
-                           0, self.counter_marker().counter(),
-                           "Trying to deallocate a CcBox with a reference counter > 0"
-                       );
-   
-                       cc_dealloc(self.inner, layout, state);
-                   }
-                   // _dropping_guard is dropped here, resetting state.dropping
-               });
-           } else {
-               handle_possible_cycle(self);
-           }*/
     }
 }
 

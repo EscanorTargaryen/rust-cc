@@ -148,14 +148,12 @@ cleanable.clean();
 extern crate alloc;
 extern crate core;
 
-use core::cell::RefCell;
 use core::mem;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
 pub use cc::Cc;
-pub use cc::THREAD_ACTIONS;
 #[cfg(feature = "derive")]
 pub use derives::{Finalize, Trace};
 pub use trace::{Context, CopyContext, Finalize, Trace};
@@ -234,7 +232,7 @@ pub(crate) fn trigger_collection() {
 }
 
 #[cfg(feature = "auto-collect")]
-fn adjust_trigger_point(state: &State) {
+fn _adjust_trigger_point(state: &State) {
     let _ = config::config(|config| config.adjust(state));
 }
 
@@ -362,7 +360,7 @@ fn __collect(state: &State, possible_cycles: &mut CountedList) {
         #[cfg(not(feature = "finalization"))]
         {
             let mut n = 0;
-            non_root_list.iter().for_each(|x| {
+            non_root_list.iter().for_each(|_| {
                 n += 1;
             });
 
@@ -466,7 +464,7 @@ fn deallocate_list(to_deallocate_list: List, state: &State) {
         //         and then the allocation gets deallocated immediately after.
         unsafe {
             let layout = ptr.as_ref().layout();
-            cc_dealloc(ptr, layout, state);
+            cc_dealloc(ptr, layout);
         }
     });
 

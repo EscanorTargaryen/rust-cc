@@ -19,7 +19,6 @@ pub(crate) unsafe fn cc_alloc<T: Trace + 'static>(layout: Layout, state: &State)
 pub(crate) unsafe fn cc_dealloc<T: ?Sized + Trace + 'static>(
     ptr: NonNull<CcBox<T>>,
     layout: Layout,
-    state: &State,
 ) {
 
 

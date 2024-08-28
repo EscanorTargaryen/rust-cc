@@ -1,5 +1,7 @@
 //! Information about the garbage collector state.
 
+#![allow(dead_code)]
+
 use alloc::alloc::Layout;
 use core::cell::Cell;
 
