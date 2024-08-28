@@ -158,7 +158,7 @@ pub use cc::Cc;
 pub use cc::THREAD_ACTIONS;
 #[cfg(feature = "derive")]
 pub use derives::{Finalize, Trace};
-pub use trace::{Context, Finalize, Trace, CopyContext};
+pub use trace::{Context, CopyContext, Finalize, Trace};
 
 use crate::cc::CcBox;
 use crate::collector::CONDVAR;
@@ -336,7 +336,7 @@ fn __collect(state: &State, possible_cycles: &mut CountedList) {
                 // next iteration of the loop, which will automatically check for resurrected objects
                 // using the same algorithm of the initial tracing. This makes it more difficult to
                 // create memory leaks accidentally using finalizers than in the previous implementation.
-               // let mut pc = possible_cycles.borrow_mut();
+                // let mut pc = possible_cycles.borrow_mut();
 
                 // pc is already marked PossibleCycles, while non_root_list is not.
                 // non_root_list have to be added to pc after having been marked.
@@ -344,10 +344,10 @@ fn __collect(state: &State, possible_cycles: &mut CountedList) {
                 // append the other to it in O(1), since we already know the last element of pc from the marking.
                 // This avoids iterating unnecessarily both lists and the need to update many pointers.
 
-              //  let old_size = pc.size();
+                //  let old_size = pc.size();
 
                 // SAFETY: non_root_list_size is calculated before and it's the size of non_root_list
-             //   unsafe {
+                //   unsafe {
                 //     pc.swap_list(&mut non_root_list, non_root_list_size);
                 //}
                 // SAFETY: swap_list swapped pc and non_root_list, so every element inside non_root_list is already
@@ -361,6 +361,12 @@ fn __collect(state: &State, possible_cycles: &mut CountedList) {
 
         #[cfg(not(feature = "finalization"))]
         {
+            let mut n = 0;
+            non_root_list.iter().for_each(|x| {
+                n += 1;
+            });
+
+            println!("Sto deallocando {n} elementi che facevano parte di cicli");
             deallocate_list(non_root_list, state);
         }
     }

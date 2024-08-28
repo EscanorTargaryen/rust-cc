@@ -60,12 +60,12 @@ pub fn init_collector() {
                     }
 
                     //prima cosa incremento tutte le reference
-
-                    let mut void = THREAD_ACTIONS.lock().unwrap();
-
                     let mut changes: Vec<ActionEntry> = Vec::new();
+                    {
+                        let mut void = THREAD_ACTIONS.lock().unwrap();
 
-                    swap(&mut *void, &mut changes);
+                        swap(&mut *void, &mut changes);
+                    }
 
                     for a in &changes {
                         unsafe {
@@ -93,7 +93,7 @@ pub fn init_collector() {
                                 println!("{}", a.cc_box.as_ref().counter_marker().counter());
 
                                 if a.cc_box.as_ref().counter_marker().counter() == 0 {
-                                    println!("qualcosa sta venendo deallocato");
+                                    println!("Sto deallocando un elemento aciclico");
 
                                     drop_elem(a.cc_box, state, &mut possible_cycles)
                                 } else {
@@ -110,6 +110,7 @@ pub fn init_collector() {
                     for a in &changes {
                         ps.insert(a.cc_box);
                     }
+
                     collect(state, &mut possible_cycles);
                 });
 

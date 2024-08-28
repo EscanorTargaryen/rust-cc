@@ -10,8 +10,9 @@ use core::ops::Deref;
 use core::ptr::{self, drop_in_place, NonNull};
 use std::marker::PhantomData;
 use std::sync::{Arc, Mutex};
+use std::thread;
 
-use crate::collector::{init_collector, remove_from_list};
+use crate::collector::{COLLECTOR, init_collector, remove_from_list};
 use crate::counter_marker::{CounterMarker, Mark};
 use crate::list::ListMethods;
 use crate::state::{state, State};
@@ -278,7 +279,12 @@ impl<T: ?Sized + Trace + 'static> Drop for Cc<T> {
         fn decrement_counter<T: ?Sized + Trace + 'static>(cc: &Cc<T>) {
             // Always decrement the counter
             // let res = cc.counter_marker().decrement_counter();
-            THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(cc.inner.cast(), Action::Remove));
+
+
+            if !thread::current().id().eq(&COLLECTOR.get().unwrap().thread().id()) {
+                THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(cc.inner.cast(), Action::Remove));
+            }
+
 
             //debug_assert!(res.is_ok());
         }
