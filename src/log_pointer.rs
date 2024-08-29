@@ -57,9 +57,9 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
     fn log_copy<E>(&self, result: &mut Result<MutexGuard<'_, T>, E>) {
         if is_collecting() {
             if let Ok(result) = result {
-                let v = COLLECTOR_VERSION.load(Ordering::Relaxed);
+                let v = COLLECTOR_VERSION.load(Ordering::Acquire);
                 let mut log = self.log_pointer.mutex.lock().unwrap();
-                if v != self.log_pointer.version.load(Ordering::Relaxed) || log.is_none() {
+                if v != self.log_pointer.version.load(Ordering::Acquire) || log.is_none() {
                     let mut vec = Vec::new();
                     let mut ctx = CopyContext::new(&mut vec);
                     result.make_copy(&mut ctx);
@@ -121,9 +121,9 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
 
 unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
     fn trace(&self, ctx: &mut Context<'_>) {
-        let v = COLLECTOR_VERSION.load(Ordering::Relaxed);
+        let v = COLLECTOR_VERSION.load(Ordering::Acquire);
 
-        if v == self.log_pointer.version.load(Ordering::Relaxed) {
+        if v == self.log_pointer.version.load(Ordering::Acquire) {
             let object = self.log_pointer.mutex.lock().unwrap();
             if let Some(obj) = &*object {
                 obj.copy.borrow().iter().map(|el| {

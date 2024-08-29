@@ -7,15 +7,15 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use STATES::COLLECTING;
 
-use crate::collect;
 use crate::cc::{Action, ActionEntry, CcBox, THREAD_ACTIONS};
+use crate::collect;
 use crate::counter_marker::Mark;
 use crate::list::{CountedList, ListMethods};
 use crate::log_pointer::ObjectCopy;
 use crate::state::{replace_state_field, State, try_state};
 use crate::utils::cc_dealloc;
 
-pub static COLLECTOR: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
+pub static COLLECTOR: OnceLock<Mutex<Option<thread::JoinHandle<()>>>> = OnceLock::new();
 
 //usage:  CONDVAR.get().clone().unwrap().notify_one();
 pub static CONDVAR: OnceLock<Condvar> = OnceLock::new();
@@ -37,9 +37,9 @@ pub fn is_collecting() -> bool {
 }
 
 pub fn init_collector() {
-    let c = CONDVAR.get_or_init(|| Condvar::new());
+    let c = CONDVAR.get_or_init(Condvar::new);
     let _ = COLLECTOR.get_or_init(|| {
-        thread::spawn(|| {
+        let t = thread::spawn(|| {
             let mut possible_cycles: CountedList = CountedList::new();
             let m: Mutex<()> = Mutex::new(());
 
@@ -50,7 +50,7 @@ pub fn init_collector() {
                     let mut state = COLLECTOR_STATE.lock().unwrap();
                     *state = COLLECTING;
 
-                    COLLECTOR_VERSION.fetch_add(1, Ordering::Relaxed);
+                    COLLECTOR_VERSION.fetch_add(1, Ordering::AcqRel);
                 }
 
                 //if someone awaken me then I will collect
@@ -71,27 +71,20 @@ pub fn init_collector() {
                     for a in &changes {
                         unsafe {
                             if let Action::Add = a.action {
-                                println!("{}", a.cc_box.as_ref().counter_marker().counter());
                                 if a.cc_box.as_ref().counter_marker().increment_counter().is_err() {
                                     panic!("Too many references has been created to a single Cc");
                                 }
-                                println!("{}", a.cc_box.as_ref().counter_marker().counter())
                             }
                         }
                     }
-
-
+                    
                     //seconda cosa decremento tutte le reference
 
                     for a in &changes {
                         unsafe {
                             if let Action::Remove = a.action {
-                                println!("{}", a.cc_box.as_ref().counter_marker().counter());
-
                                 let _ = a.cc_box.as_ref().counter_marker().decrement_counter();
 
-
-                                println!("{}", a.cc_box.as_ref().counter_marker().counter());
 
                                 if a.cc_box.as_ref().counter_marker().counter() == 0 {
                                     println!("Sto deallocando un elemento aciclico");
@@ -133,11 +126,12 @@ pub fn init_collector() {
                     *state = STATES::SLEEPING;
                 }
 
-                if STOP.load(Ordering::Relaxed) {
+                if STOP.load(Ordering::Acquire) {
                     break;
                 }
             }
-        })
+        });
+        return Mutex::new(Some(t));
     });
 }
 
