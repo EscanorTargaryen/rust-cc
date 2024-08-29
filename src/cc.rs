@@ -270,13 +270,12 @@ impl<T: ?Sized + Trace + 'static> Deref for Cc<T> {
 
 impl<T: ?Sized + Trace + 'static> Drop for Cc<T> {
     fn drop(&mut self) {
-        let v = COLLECTOR.get().unwrap().lock();
-        if let Ok(v) = v {
-            if let Some(v) = &*v {
-                if !v.thread().id().eq(&thread::current().id()) {
-                    THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(self.inner.cast(), Action::Remove));
-                }
-            }
+        let v = COLLECTOR.get().unwrap().lock().unwrap();
+        let Some(f) = &*v else { return; };
+        let id = f.thread().id();
+        drop(v);
+        if !id.eq(&thread::current().id()) {
+            THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(self.inner.cast(), Action::Remove));
         }
     }
 }

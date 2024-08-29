@@ -152,6 +152,7 @@ use core::mem;
 use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
+use std::sync::atomic::Ordering;
 
 pub use cc::Cc;
 #[cfg(feature = "derive")]
@@ -159,7 +160,7 @@ pub use derives::{Finalize, Trace};
 pub use trace::{Context, CopyContext, Finalize, Trace};
 
 use crate::cc::CcBox;
-use crate::collector::CONDVAR;
+use crate::collector::{CONDVAR, N_CYCLIC_DROPPED};
 use crate::counter_marker::Mark;
 use crate::list::*;
 use crate::state::{replace_state_field, State};
@@ -364,7 +365,7 @@ fn __collect(state: &State, possible_cycles: &mut CountedList) {
                 n += 1;
             });
 
-            println!("Sto deallocando {n} elementi che facevano parte di cicli");
+            N_CYCLIC_DROPPED.fetch_add(n, Ordering::Relaxed);
             deallocate_list(non_root_list, state);
         }
     }

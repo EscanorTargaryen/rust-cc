@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use STATES::COLLECTING;
 
+use crate::{collect, collect_cycles};
 use crate::cc::{Action, ActionEntry, CcBox, THREAD_ACTIONS};
-use crate::collect;
 use crate::counter_marker::Mark;
 use crate::list::{CountedList, ListMethods};
 use crate::log_pointer::ObjectCopy;
@@ -27,6 +27,10 @@ pub static COLLECTOR_VERSION: AtomicU64 = AtomicU64::new(0);
 pub static LOGS: Mutex<Vec<Arc<ObjectCopy>>> = Mutex::new(Vec::new());
 
 pub static STOP: AtomicBool = AtomicBool::new(false);
+
+pub static N_ACYCLIC_DROPPED: AtomicU64 = AtomicU64::new(0);
+
+pub static N_CYCLIC_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 pub fn is_collecting() -> bool {
     let state = COLLECTOR_STATE.lock().unwrap();
@@ -77,7 +81,7 @@ pub fn init_collector() {
                             }
                         }
                     }
-                    
+
                     //seconda cosa decremento tutte le reference
 
                     for a in &changes {
@@ -87,8 +91,7 @@ pub fn init_collector() {
 
 
                                 if a.cc_box.as_ref().counter_marker().counter() == 0 {
-                                    println!("Sto deallocando un elemento aciclico");
-
+                                    N_ACYCLIC_DROPPED.fetch_add(1, Ordering::Relaxed);
                                     drop_elem(a.cc_box, state, &mut possible_cycles)
                                 } else {
                                     //lo marchiamo come possibile ciclo
@@ -222,6 +225,20 @@ pub(crate) fn add_to_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut Counted
     // Make sure this operation is the first after the if-else, since the CcBox is in
     // an invalid state now (it's marked Mark::PossibleCycles, but it isn't into the list)
     list.add(ptr);
+}
+
+pub fn collect_and_stop() {
+    let mut a = COLLECTOR.get().unwrap().lock().unwrap();
+
+    let o = a.take();
+    drop(a);
+    if let Some(o) = o {
+        STOP.store(true, Ordering::Release);
+
+        collect_cycles();
+
+        let _ = o.join();
+    }
 }
 
 pub enum STATES {
