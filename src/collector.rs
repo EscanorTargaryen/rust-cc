@@ -1,9 +1,10 @@
 use std::{mem, thread};
-use std::collections::HashSet;
 use std::mem::swap;
 use std::ptr::NonNull;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::Ordering::Relaxed;
+use std::thread::current;
 
 use STATES::COLLECTING;
 
@@ -34,6 +35,7 @@ pub static N_CYCLIC_DROPPED: AtomicU64 = AtomicU64::new(0);
 
 pub fn is_collecting() -> bool {
     let state = COLLECTOR_STATE.lock().unwrap();
+
     match *state {
         COLLECTING => true,
         _ => false,
@@ -48,10 +50,14 @@ pub fn init_collector() {
             let m: Mutex<()> = Mutex::new(());
 
             loop {
-                { let _s = c.wait(m.lock().unwrap()); }
+                {
+                    if !STOP.load(Relaxed)
+                    { let _s = c.wait(m.lock().unwrap()); }
+                }
 
                 {
                     let mut state = COLLECTOR_STATE.lock().unwrap();
+
                     *state = COLLECTING;
 
                     COLLECTOR_VERSION.fetch_add(1, Ordering::AcqRel);
@@ -101,13 +107,6 @@ pub fn init_collector() {
                         }
                     }
 
-                    //lista dei possible cycles preso dalle azioni effettuate
-                    let mut ps = HashSet::new();
-
-                    for a in &changes {
-                        ps.insert(a.cc_box);
-                    }
-
                     collect(state, &mut possible_cycles);
                 });
 
@@ -124,8 +123,10 @@ pub fn init_collector() {
                     mem::swap(&mut *l, &mut Vec::new());
                 }
 
+
                 {
                     let mut state = COLLECTOR_STATE.lock().unwrap();
+
                     *state = STATES::SLEEPING;
                 }
 
@@ -228,12 +229,23 @@ pub(crate) fn add_to_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut Counted
 }
 
 pub fn collect_and_stop() {
+    if STOP.load(Relaxed) == true {
+        panic!();
+    }
+
     let mut a = COLLECTOR.get().unwrap().lock().unwrap();
+
 
     let o = a.take();
     drop(a);
     if let Some(o) = o {
+        if o.thread().id().eq(&current().id()) {
+            panic!();
+        }
+
+
         STOP.store(true, Ordering::Release);
+
 
         collect_cycles();
 
@@ -241,6 +253,7 @@ pub fn collect_and_stop() {
     }
 }
 
+#[derive(PartialEq, Eq, Debug)]
 pub enum STATES {
     SLEEPING,
     COLLECTING,

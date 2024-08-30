@@ -1,36 +1,23 @@
 use std::sync::atomic::Ordering;
 use std::thread;
-use std::thread::sleep;
 
-use rust_cc::{Cc, Context, CopyContext, Finalize, Trace};
-use rust_cc::collector::{collect_and_stop, N_ACYCLIC_DROPPED, N_CYCLIC_DROPPED};
+use rust_cc::Cc;
+use rust_cc::collector::{collect_and_stop, COLLECTOR, COLLECTOR_STATE, COLLECTOR_VERSION, CONDVAR, N_ACYCLIC_DROPPED, N_CYCLIC_DROPPED, STATES};
 use rust_cc::log_pointer::LoggedMutex;
 
-pub struct Cyclic {
-    cyclic: LoggedMutex<Option<Cc<Self>>>,
-}
+use crate::cyclic::Cyclic;
 
-impl Finalize for Cyclic {}
-
-unsafe impl Trace for Cyclic {
-    fn trace(&self, ctx: &mut Context<'_>) {
-        self.cyclic.trace(ctx);
-    }
-
-    fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
-        self.cyclic.make_copy(ctx);
-    }
-}
-
+mod cyclic;
 
 #[test]
 fn collect_acyclic() {
+    print();
     let t = thread::spawn(|| {
         let _ = Cc::new(4);
     });
 
     let _ = Cc::new(4);
-    sleep(std::time::Duration::from_secs(2));
+
 
     let _ = t.join();
 
@@ -42,6 +29,7 @@ fn collect_acyclic() {
 
 #[test]
 fn collect_cyclic() {
+    print();
     let t = thread::spawn(|| {
         {
             let _cyclic1 = Cc::new(Cyclic {
@@ -84,6 +72,13 @@ fn collect_cyclic() {
 
     assert_eq!(N_ACYCLIC_DROPPED.load(Ordering::Relaxed), 0);
     assert_eq!(N_CYCLIC_DROPPED.load(Ordering::Relaxed), 6);
+}
+
+fn print() {
+    assert!(COLLECTOR.get().is_none());
+    assert!(CONDVAR.get().is_none());
+    assert_eq!(*COLLECTOR_STATE.lock().unwrap(), STATES::SLEEPING);
+    assert_eq!(COLLECTOR_VERSION.load(Ordering::Relaxed), 0);
 }
 
 

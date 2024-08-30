@@ -58,7 +58,9 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
         if is_collecting() {
             if let Ok(result) = result {
                 let v = COLLECTOR_VERSION.load(Ordering::Acquire);
+
                 let mut log = self.log_pointer.mutex.lock().unwrap();
+
                 if v != self.log_pointer.version.load(Ordering::Acquire) || log.is_none() {
                     let mut vec = Vec::new();
                     let mut ctx = CopyContext::new(&mut vec);
@@ -81,7 +83,6 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
 
     pub fn lock(&self) -> LockResult<MutexGuard<'_, T>> {
         let mut result = self.mutex.lock();
-
         self.log_copy(&mut result);
 
         result
@@ -113,9 +114,12 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
     pub fn get_mut(&mut self) -> LockResult<&mut T> {
 
         //se hai già una referenza mutabile, elimina il logpoiner perchè è già stata fatta la copia da un mutex che contiene questo mutex (all'interno del CcBox)
-        { *self.log_pointer.mutex.lock().unwrap() = None; }
+        {
+            *self.log_pointer.mutex.lock().unwrap() = None;
 
-        self.mutex.get_mut()
+
+            self.mutex.get_mut()
+        }
     }
 }
 
@@ -135,12 +139,10 @@ unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
                 return;
             }
             drop(object);
-
             if let Ok(r) = self.mutex.try_lock() {
                 r.trace(ctx);
             } else {
                 let object = self.log_pointer.mutex.lock().unwrap();
-
                 if let Some(obj) = &*object {
                     obj.copy.borrow().iter().map(|el| {
                         ManuallyDrop::new(Cc::__new_internal(*el))

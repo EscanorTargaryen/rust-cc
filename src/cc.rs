@@ -233,7 +233,7 @@ impl<T: ?Sized + Trace + 'static> Clone for Cc<T> {
         }
 
 
-        THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(self.inner.cast(), Action::Add));
+        { THREAD_ACTIONS.lock().unwrap().push(ActionEntry::new(self.inner.cast(), Action::Add)); }
 
 
         /* if self.counter_marker().increment_counter().is_err() {
@@ -271,6 +271,7 @@ impl<T: ?Sized + Trace + 'static> Deref for Cc<T> {
 impl<T: ?Sized + Trace + 'static> Drop for Cc<T> {
     fn drop(&mut self) {
         let v = COLLECTOR.get().unwrap().lock().unwrap();
+
         let Some(f) = &*v else { return; };
         let id = f.thread().id();
         drop(v);
