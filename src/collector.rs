@@ -235,7 +235,6 @@ pub fn collect_and_stop() {
 
     let mut a = COLLECTOR.get().unwrap().lock().unwrap();
 
-
     let o = a.take();
     drop(a);
     if let Some(o) = o {

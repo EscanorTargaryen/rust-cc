@@ -1,11 +1,10 @@
-use std::cell::RefCell;
 use std::sync::atomic::Ordering;
+use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Mutex;
 use std::thread;
-use std::thread::sleep;
-use std::time::Duration;
 
 use rust_cc::{Cc, collect_cycles};
+use rust_cc::cc::THREAD_ACTIONS;
 use rust_cc::collector::{collect_and_stop, COLLECTOR, COLLECTOR_STATE, COLLECTOR_VERSION, CONDVAR, N_ACYCLIC_DROPPED, N_CYCLIC_DROPPED, STATES};
 use rust_cc::log_pointer::LoggedMutex;
 
@@ -146,20 +145,19 @@ fn no_dealloc() {
     { let _ = Cc::new(4); }
 
     let t = thread::spawn(|| {
-        let n: Cc<RefCell<u64>> = Cc::new(RefCell::new(0));
+        let n: LoggedMutex<Cc<u64>> = LoggedMutex::new(Cc::new(0));
         loop {
-            *n.borrow_mut() += 1;
+            let l = n.lock().unwrap();
             if *EXIT.lock().unwrap() {
-                drop(n); //FIXME anche se droppo da memory leak
                 break;
             }
+            drop(l);
         }
     });
 
-    sleep(Duration::from_millis(100));
     collect_and_stop();
-    assert_eq!(N_ACYCLIC_DROPPED.load(Ordering::Relaxed), 1);
-    assert_eq!(N_CYCLIC_DROPPED.load(Ordering::Relaxed), 0);
+    assert_eq!(N_ACYCLIC_DROPPED.load(Relaxed), 1);
+    assert_eq!(N_CYCLIC_DROPPED.load(Relaxed), 0);
     *EXIT.lock().unwrap() = true;
     let _ = t.join();
 }
@@ -167,7 +165,7 @@ fn no_dealloc() {
 #[test]
 fn collector_version_check() {
     initial_test();
-
+    { let _ = Cc::new(4); }
     assert_eq!(COLLECTOR_VERSION.load(Ordering::Relaxed), 0);
     collect_and_stop();
     assert_eq!(COLLECTOR_VERSION.load(Ordering::Relaxed), 1);
@@ -176,21 +174,43 @@ fn collector_version_check() {
 #[test]
 fn log_version_check() {
     initial_test();
+    { let _ = Cc::new(4); }
 
-    let l = LoggedMutex::new(0);
-    collect_cycles();
+    {
+        let l = LoggedMutex::new(Cc::new(0));
+        assert_eq!(l.log_pointer.version.load(Relaxed), 0);
+        loop {
+            collect_cycles();
+            let f = l.lock().unwrap();
+            drop(f);
+            if l.log_pointer.version.load(Relaxed) > 0 {
+                break;
+            }
+        }
+    }
 
-
-    assert_eq!(COLLECTOR_VERSION.load(Ordering::Relaxed), 0);
     collect_and_stop();
-    assert_eq!(COLLECTOR_VERSION.load(Ordering::Relaxed), 1);
 }
 
-//TODO controlla le thread actions, aggiungilo sopra
+#[test]
+fn check_thread_actions() {
+    initial_test();
 
-//TODO cosa succede un loggedmutex interno al loggedmutex
+    {
+        let _ = Cc::new(4); //just one REMOVE is counted
+    }
 
-//TODO dopo che hai fatto il lock di logpointer, controlla che ha fatto la copia, idem per try_lock
+    assert_eq!(THREAD_ACTIONS.lock().unwrap().len(), 1);
+
+    {
+        let g = Cc::new(4);
+        let _ = g.clone(); //ADD
+    } //2 REMOVE
+
+    assert_eq!(THREAD_ACTIONS.lock().unwrap().len(), 4);
+
+    collect_and_stop();
+}
 
 fn initial_test() {
     assert!(COLLECTOR.get().is_none());

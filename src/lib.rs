@@ -173,7 +173,7 @@ compile_error!("Feature \"std\" cannot be disabled without enabling feature \"ni
 #[cfg(all(test, feature = "std"))]
 mod tests;
 
-mod cc;
+pub mod cc;
 mod counter_marker;
 mod list;
 pub mod state;

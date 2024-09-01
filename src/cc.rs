@@ -24,7 +24,7 @@ pub enum Action {
     Remove,
 }
 
-pub(crate) struct ActionEntry {
+pub struct ActionEntry {
     pub(crate) cc_box: NonNull<CcBox<()>>,
     pub(crate) action: Action,
 }
@@ -41,14 +41,14 @@ impl ActionEntry {
 }
 
 
-pub(crate) static THREAD_ACTIONS: Mutex<Vec<ActionEntry>> = Mutex::new(Vec::new());
+pub static THREAD_ACTIONS: Mutex<Vec<ActionEntry>> = Mutex::new(Vec::new());
 
 
 /// A thread-local cycle collected pointer.
 ///
 /// See the [module-level documentation][`mod@crate`] for more details.
 #[repr(transparent)]
-pub struct Cc<T: ?Sized + Trace + 'static> {
+pub struct Cc<T: ?Sized + Trace + Sync + Send + 'static> {
     inner: NonNull<CcBox<T>>,
     _phantom: PhantomData<Arc<T>>, // Make Cc !Send and !Sync
 }
@@ -61,11 +61,11 @@ where
 {}
 
 
-unsafe impl<T: Trace + 'static + Send> Send for Cc<T> {}
+unsafe impl<T: Trace + 'static + Sync + Send> Send for Cc<T> {}
 
-unsafe impl<T: Trace + 'static + Sync> Sync for Cc<T> {}
+unsafe impl<T: Trace + 'static + Sync + Send> Sync for Cc<T> {}
 
-impl<T: Trace + 'static> Cc<T> {
+impl<T: Trace + Sync + Send + 'static> Cc<T> {
     /// Creates a new `Cc`.
     ///
     /// # Collection
@@ -130,7 +130,7 @@ impl<T: Trace + 'static> Cc<T> {
        }*/
 }
 
-impl<T: ?Sized + Trace + 'static> Cc<T> {
+impl<T: ?Sized + Trace + Sync + Send + 'static> Cc<T> {
     /// Returns `true` if the two [`Cc`]s point to the same allocation. This function ignores the metadata of `dyn Trait` pointers.
     #[inline]
     pub fn ptr_eq(this: &Cc<T>, other: &Cc<T>) -> bool {
@@ -214,7 +214,7 @@ impl<T: ?Sized + Trace + 'static> Cc<T> {
     }
 }
 
-impl<T: ?Sized + Trace + 'static> Clone for Cc<T> {
+impl<T: ?Sized + Trace + Sync + Send + 'static> Clone for Cc<T> {
     /// Makes a clone of the [`Cc`] pointer.
     ///
     /// This creates another pointer to the same allocation, increasing the strong reference count.
@@ -251,9 +251,8 @@ impl<T: ?Sized + Trace + 'static> Clone for Cc<T> {
 }
 
 
-impl<T: ?Sized + Trace + 'static> Deref for Cc<T> {
+impl<T: ?Sized + Trace + Sync + Send + 'static> Deref for Cc<T> {
     type Target = T;
-
     #[inline]
     #[track_caller]
     fn deref(&self) -> &Self::Target {
@@ -268,7 +267,7 @@ impl<T: ?Sized + Trace + 'static> Deref for Cc<T> {
     }
 }
 
-impl<T: ?Sized + Trace + 'static> Drop for Cc<T> {
+impl<T: ?Sized + Trace + Sync + Send + 'static> Drop for Cc<T> {
     fn drop(&mut self) {
         let v = COLLECTOR.get().unwrap().lock().unwrap();
 
@@ -281,7 +280,7 @@ impl<T: ?Sized + Trace + 'static> Drop for Cc<T> {
     }
 }
 
-unsafe impl<T: ?Sized + Trace + 'static> Trace for Cc<T> {
+unsafe impl<T: ?Sized + Trace + Sync + Send + 'static> Trace for Cc<T> {
     #[inline]
     #[track_caller]
     fn trace(&self, ctx: &mut Context<'_>) {
@@ -297,7 +296,7 @@ unsafe impl<T: ?Sized + Trace + 'static> Trace for Cc<T> {
     }
 }
 
-impl<T: ?Sized + Trace + 'static> Finalize for Cc<T> {}
+impl<T: ?Sized + Trace + Sync + Send + 'static> Finalize for Cc<T> {}
 
 #[repr(C)]
 pub(crate) struct CcBox<T: ?Sized + Trace + 'static> {

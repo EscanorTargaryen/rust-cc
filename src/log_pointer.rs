@@ -2,6 +2,7 @@ use std::mem::ManuallyDrop;
 use std::ptr::NonNull;
 use std::sync::{Arc, LockResult, Mutex, MutexGuard, TryLockResult};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::Ordering::{Relaxed, Release};
 
 use atomic_refcell::AtomicRefCell;
 
@@ -20,8 +21,8 @@ unsafe impl Sync for ObjectCopy {}
 
 
 pub struct LogPointer {
-    mutex: Mutex<Option<Arc<ObjectCopy>>>, //TODO usa un atomic pointer al posto del mutex
-    version: AtomicU64,
+    pub mutex: Mutex<Option<Arc<ObjectCopy>>>, //TODO usa un atomic pointer al posto del mutex
+    pub version: AtomicU64,
 }
 
 
@@ -40,8 +41,8 @@ impl LogPointer {
 }
 
 pub struct LoggedMutex<T: Trace + ?Sized + 'static> {
-    log_pointer: LogPointer,
-    mutex: Mutex<T>,
+    pub log_pointer: LogPointer,
+    pub mutex: Mutex<T>,
 }
 
 impl<T: Trace> LoggedMutex<T> {
@@ -62,6 +63,7 @@ impl<T: Trace + ?Sized> LoggedMutex<T> {
                 let mut log = self.log_pointer.mutex.lock().unwrap();
 
                 if v != self.log_pointer.version.load(Ordering::Acquire) || log.is_none() {
+                    self.log_pointer.version.store(v, Release);
                     let mut vec = Vec::new();
                     let mut ctx = CopyContext::new(&mut vec);
                     result.make_copy(&mut ctx);
@@ -164,9 +166,11 @@ unsafe impl<T: Trace + ?Sized> Trace for LoggedMutex<T> {
     fn make_copy(&mut self, ctx: &mut CopyContext<'_>) {
         let object = self.log_pointer.mutex.get_mut();
 
-        if let Some(obj) = object.unwrap() {
-            ctx.copy_vec.extend(obj.copy.borrow().iter());
-            return;
+        if self.log_pointer.version.load(Relaxed) == COLLECTOR_VERSION.load(Relaxed) {
+            if let Some(obj) = object.unwrap() {
+                ctx.copy_vec.extend(obj.copy.borrow().iter());
+                return;
+            }
         }
 
         let result = self.mutex.try_lock();
