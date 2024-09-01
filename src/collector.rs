@@ -229,9 +229,10 @@ pub(crate) fn add_to_list(ptr: NonNull<CcBox<()>>, possible_cycles: &mut Counted
 }
 
 pub fn collect_and_stop() {
-    if STOP.load(Relaxed) == true {
+    if STOP.load(Relaxed) {
         panic!();
     }
+    STOP.store(true, Ordering::Release);
 
     let mut a = COLLECTOR.get().unwrap().lock().unwrap();
 
@@ -241,11 +242,7 @@ pub fn collect_and_stop() {
         if o.thread().id().eq(&current().id()) {
             panic!();
         }
-
-
-        STOP.store(true, Ordering::Release);
-
-
+        
         collect_cycles();
 
         let _ = o.join();
